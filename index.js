@@ -211,59 +211,170 @@ function generateEntitlementCatalog(csvFilePath) {
 }
 
 /**
+ * Register app as a governance resource
+ */
+async function registerGovernanceResource(config, appId) {
+  try {
+    // First try to register the app as a resource
+    const response = await fetch(
+      `https://${config.oktaDomain}/governance/api/v1/resources`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `SSWS ${config.apiToken}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          source: {
+            id: appId
+          }
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorBody}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    throw new Error(`Error registering governance resource: ${error.message}`);
+  }
+}
+
+/**
+ * Enable entitlement management for an app in Okta Governance
+ */
+async function enableEntitlementManagement(config, resourceId) {
+  try {
+    const response = await fetch(
+      `https://${config.oktaDomain}/governance/api/v1/resources/${resourceId}/entitlement-management`,
+      {
+        method: 'PUT',
+        headers: {
+          'Authorization': `SSWS ${config.apiToken}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          status: 'ENABLED'
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorBody}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    throw new Error(`${error.message}`);
+  }
+}
+
+/**
+ * Create an entitlement in Okta Governance
+ */
+async function createEntitlement(config, resourceId, entitlementData) {
+  try {
+    const response = await fetch(
+      `https://${config.oktaDomain}/governance/api/v1/resources/${resourceId}/entitlements`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `SSWS ${config.apiToken}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(entitlementData)
+      }
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorBody}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    throw new Error(`${error.message}`);
+  }
+}
+
+/**
+ * Get resource ID for an app in Okta Governance
+ */
+async function getGovernanceResourceId(config, appId) {
+  try {
+    // Try to get the resource by querying governance resources
+    const response = await fetch(
+      `https://${config.oktaDomain}/governance/api/v1/resources?filter=source.id eq "${appId}"`,
+      {
+        headers: {
+          'Authorization': `SSWS ${config.apiToken}`,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const resources = await response.json();
+    if (resources && resources.length > 0) {
+      return resources[0].id;
+    }
+
+    return null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
  * Get existing entitlements for an app
  * Tries multiple endpoint patterns to find the correct one
  */
-async function getAppEntitlements(config, appId) {
-  // Try different endpoint patterns
-  const endpoints = [
-    `/api/v1/governance/resources/${appId}/entitlements`,
-    `/api/v1/apps/${appId}/governance/entitlements`,
-    `/api/v1/governance/entitlements?resourceId=${appId}`
-  ];
-
-  for (const endpoint of endpoints) {
-    try {
-      const response = await fetch(
-        `https://${config.oktaDomain}${endpoint}`,
-        {
-          headers: {
-            'Authorization': `SSWS ${config.apiToken}`,
-            'Accept': 'application/json'
-          }
+async function getAppEntitlements(config, resourceId) {
+  try {
+    const response = await fetch(
+      `https://${config.oktaDomain}/governance/api/v1/resources/${resourceId}/entitlements`,
+      {
+        headers: {
+          'Authorization': `SSWS ${config.apiToken}`,
+          'Accept': 'application/json'
         }
-      );
-
-      if (response.status === 404 || response.status === 405) {
-        // Try next endpoint
-        continue;
       }
+    );
 
-      if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorBody}`);
-      }
-
-      return await response.json();
-    } catch (error) {
-      // If governance API is not available, continue to next endpoint
-      if (error.message.includes('404') || error.message.includes('405') || error.message.includes('not found')) {
-        continue;
-      }
-      // For other errors, throw
-      throw new Error(`Error fetching entitlements: ${error.message}`);
+    if (response.status === 404 || response.status === 405) {
+      return null;
     }
-  }
 
-  // None of the endpoints worked
-  return null;
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorBody}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    // If governance API is not available, return null
+    if (error.message.includes('404') || error.message.includes('405') || error.message.includes('not found')) {
+      return null;
+    }
+    throw new Error(`Error fetching entitlements: ${error.message}`);
+  }
 }
 
 /**
  * Process entitlement catalog and create entitlements in Okta
  */
 async function processEntitlements(config, appId, csvFilePath) {
-  console.log('📦 STEP 5: Entitlement Catalog Creation');
+  console.log('📦 STEP 7: Entitlement Catalog & Creation');
   console.log('   → Parsing CSV file for entitlement columns (ent_*)...');
 
   const catalog = generateEntitlementCatalog(csvFilePath);
@@ -285,72 +396,94 @@ async function processEntitlements(config, appId, csvFilePath) {
   console.log(`   → Total unique entitlements to create: ${totalEntitlements}`);
   console.log('');
 
-  // Check if Governance API is available
-  console.log('   → Checking Okta Governance API availability...');
-  console.log(`   → Trying governance API endpoints...`);
+  // Get governance resource ID for the app
+  console.log('   → Fetching governance resource ID for app...');
+  console.log(`   → API Call: GET /governance/api/v1/resources?filter=source.id eq "${appId}"`);
 
-  const existingEntitlements = await getAppEntitlements(config, appId);
+  const resourceId = await getGovernanceResourceId(config, appId);
 
-  if (existingEntitlements === null) {
-    console.log('   ⚠ Okta Governance API not available for this organization');
-    console.log('');
-    console.log('   💡 NOTE: Entitlement creation requires:');
-    console.log('     • Okta Identity Governance (OIG) license');
-    console.log('     • Governance feature enabled in your Okta org');
+  if (!resourceId) {
+    console.log('   ⚠ Could not find governance resource for this app');
+    console.log('   → Entitlement management may not be enabled yet');
+    console.log('   → Try enabling it in Okta Admin Console: Identity Governance → Resources');
     console.log('');
     console.log('   📋 Entitlement Catalog Summary:');
     for (const [column, values] of Object.entries(catalog)) {
       const attributeName = column.substring(4); // Remove 'ent_' prefix
-      console.log(`     • ${attributeName}:`);
-      values.forEach(value => console.log(`       - ${value}`));
+      console.log(`     • ${attributeName}: ${values.join(', ')}`);
     }
-    console.log('');
-    console.log('   → Manual creation instructions:');
-    console.log('     1. Login to Okta Admin Console');
-    console.log('     2. Navigate to Identity Governance → Resources');
-    console.log('     3. Select your application');
-    console.log('     4. Create entitlements manually from the catalog above');
     console.log('');
     return;
   }
 
-  console.log(`   ✓ Governance API available (read-only)`);
-  console.log(`   → Current entitlements in system: ${existingEntitlements.length}`);
+  console.log(`   ✓ Governance resource found: ${resourceId}`);
   console.log('');
 
-  console.log('   💡 NOTE: Entitlements in Okta Identity Governance are typically');
-  console.log('   imported/synced from the connected application, not created via API.');
+  // Check existing entitlements
+  console.log('   → Fetching existing entitlements...');
+  console.log(`   → API Call: GET /governance/api/v1/resources/${resourceId}/entitlements`);
+
+  const existingEntitlements = await getAppEntitlements(config, resourceId);
+
+  if (existingEntitlements === null) {
+    console.log('   ⚠ Could not fetch entitlements from governance API');
+    console.log('');
+    return;
+  }
+
+  console.log(`   ✓ Found ${existingEntitlements.length} existing entitlements`);
   console.log('');
 
-  console.log('   📋 Entitlement Catalog from CSV:');
+  // Create entitlements from catalog
+  console.log('   → Creating entitlements from CSV catalog...');
   console.log('');
+
+  let created = 0;
+  let skipped = 0;
+  let failed = 0;
 
   for (const [column, values] of Object.entries(catalog)) {
     const attributeName = column.substring(4); // Remove 'ent_' prefix
-    console.log(`   → ${attributeName} (${values.length} values):`);
-    values.forEach(value => {
-      // Check if this entitlement already exists in Okta
-      const exists = existingEntitlements.some(ent =>
-        ent.name && ent.name.toLowerCase().includes(value.toLowerCase())
-      );
-      const status = exists ? '✓ exists in Okta' : 'new';
-      console.log(`     • ${value} (${status})`);
-    });
+    console.log(`   → Processing ${attributeName} entitlements:`);
+
+    for (const value of values) {
+      try {
+        // Check if entitlement already exists
+        const exists = existingEntitlements.some(ent =>
+          ent.name && ent.name.toLowerCase() === value.toLowerCase()
+        );
+
+        if (exists) {
+          console.log(`     • ${value} (already exists)`);
+          skipped++;
+          continue;
+        }
+
+        // Create entitlement
+        const entitlementData = {
+          name: value,
+          attribute: attributeName,
+          value: JSON.stringify({ name: value })
+        };
+
+        await createEntitlement(config, resourceId, entitlementData);
+        console.log(`     ✓ ${value} (created)`);
+        created++;
+      } catch (error) {
+        console.log(`     ✗ ${value} (failed: ${error.message})`);
+        failed++;
+      }
+    }
     console.log('');
   }
 
-  console.log('   📊 Entitlement Catalog Summary:');
-  console.log(`     • Total unique entitlements identified: ${totalEntitlements}`);
-  console.log(`     • Entitlement types: ${entColumns.length}`);
-  console.log('');
-
-  console.log('   → To import these entitlements into Okta Governance:');
-  console.log('     1. Login to Okta Admin Console');
-  console.log('     2. Navigate to Identity Governance → Resources');
-  console.log('     3. Select your application');
-  console.log('     4. Configure entitlement import/discovery settings');
-  console.log('     5. Map CSV columns to entitlement attributes');
-  console.log('     6. Run entitlement import to sync from your data source');
+  console.log('   📊 Entitlement Creation Summary:');
+  console.log(`     • Total unique entitlements: ${totalEntitlements}`);
+  console.log(`     • Successfully created: ${created}`);
+  console.log(`     • Already existed: ${skipped}`);
+  if (failed > 0) {
+    console.log(`     • Failed: ${failed}`);
+  }
   console.log('');
 }
 
@@ -604,7 +737,7 @@ async function processAttributeMappings(config, appId, createdAttributes) {
   }
 
   console.log('');
-  console.log('🔗 STEP 5: Profile Attribute Mapping');
+  console.log('🔗 STEP 6: Profile Attribute Mapping');
   console.log('   → Analyzing custom attributes for Okta user profile mappings...');
   console.log('');
 
@@ -914,8 +1047,50 @@ async function main() {
     }
     console.log('');
 
+    // Register app with governance and enable entitlement management
+    console.log('🔐 STEP 4: Entitlement Management Configuration');
+    let governanceResourceId = null;
+
+    // First check if resource already exists
+    console.log('   → Checking if app is registered in Governance...');
+    console.log(`   → API Call: GET /governance/api/v1/resources?filter=source.id eq "${app.id}"`);
+    governanceResourceId = await getGovernanceResourceId(config, app.id);
+
+    if (!governanceResourceId) {
+      // Try to register the app as a governance resource
+      console.log('   → App not registered in Governance, registering now...');
+      console.log(`   → API Call: POST /governance/api/v1/resources`);
+      try {
+        const resource = await registerGovernanceResource(config, app.id);
+        governanceResourceId = resource.id;
+        console.log(`   ✓ App registered as governance resource: ${governanceResourceId}`);
+      } catch (error) {
+        console.log(`   ⚠ Could not register governance resource: ${error.message}`);
+        console.log('   → This feature requires Okta Identity Governance (OIG) license');
+        console.log('   → Entitlements may need to be enabled manually in Admin Console');
+        console.log('');
+      }
+    } else {
+      console.log(`   ✓ App already registered in Governance: ${governanceResourceId}`);
+    }
+
+    // Enable entitlement management if we have a resource ID
+    if (governanceResourceId) {
+      console.log('   → Enabling entitlement management...');
+      console.log(`   → API Call: PUT /governance/api/v1/resources/${governanceResourceId}/entitlement-management`);
+      try {
+        await enableEntitlementManagement(config, governanceResourceId);
+        console.log('   ✓ Entitlement management enabled successfully');
+        console.log('   → App is now ready for entitlement creation');
+      } catch (error) {
+        console.log(`   ⚠ Could not enable entitlement management: ${error.message}`);
+        console.log('   → Entitlement management may already be enabled');
+      }
+    }
+    console.log('');
+
     // Process custom attributes from CSV columns
-    console.log('🏷️  STEP 4: Custom Attribute Management');
+    console.log('🏷️  STEP 5: Custom Attribute Management');
     console.log('   → Reading CSV column headers...');
     console.log('   → Filtering out enterprise columns (starting with "ent_")...');
     const attributes = await processCustomAttributes(config, app.id, selectedCsvFile);
