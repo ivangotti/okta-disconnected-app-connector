@@ -72,14 +72,21 @@ This is a Node.js application using ES modules (`"type": "module"`) that automat
    - Create bidirectional mappings from app attributes to Okta user profile
    - Update mapping configuration via POST to `/api/v1/mappings/{id}`
    - Display mapping results (matched/unmatched attributes)
-7. Entitlement Catalog Processing:
+7. Governance Registration & Entitlement Management (NEW - STEP 4):
+   - Check if app is registered in Okta Governance (GET /governance/api/v1/resources)
+   - If not registered: Attempt to register app as governance resource (POST /governance/api/v1/resources)
+   - Enable entitlement management (PUT /governance/api/v1/resources/{id}/entitlement-management)
+   - Graceful error handling when governance APIs return 405 (not available/licensed)
+   - Provides manual setup instructions when API methods fail
+8. Entitlement Catalog & Creation Processing (STEP 7):
    - Parse CSV to find all columns starting with `ent_` prefix
    - Extract unique values from each entitlement column (handles comma-separated values)
-   - Check Okta Governance API availability (tries multiple endpoint patterns)
-   - If API available: Display catalog with status (exists in Okta vs. new)
-   - If API unavailable: Display catalog with manual import instructions
-   - Provide guidance for importing entitlements into Okta Identity Governance
-8. Report: Show processing complete message
+   - Fetch governance resource ID for the app
+   - Get existing entitlements from governance API
+   - Create new entitlements via POST API (skips duplicates)
+   - Display catalog with creation status
+   - If resource not found: Display catalog with manual setup instructions
+9. Report: Show processing complete message
 
 ### Configuration Flow
 
@@ -138,8 +145,30 @@ Created apps use placeholder values that need manual configuration:
 - NameID Format: Email address
 - Signing: RSA-SHA256
 
+### Governance & Entitlement Management
+
+**Manual Setup Required:**
+Okta Governance APIs for resource registration and entitlement management may return 405 (Method Not Allowed) if:
+- Okta Identity Governance (OIG) license is not available
+- Governance features are not enabled for the organization
+- The app has not been manually added to Identity Governance → Resources
+
+**Manual Steps:**
+1. Login to Okta Admin Console
+2. Navigate to Identity Governance → Resources
+3. Click "Add application" and select the newly created SAML app
+4. Enable "Entitlement Management" for the application
+5. Re-run the CSV Agent - it will now detect the governance resource and create entitlements
+
+**Once Enabled:**
+- The app automatically detects the governance resource ID
+- Entitlements are created via POST to `/governance/api/v1/resources/{resourceId}/entitlements`
+- Duplicate checking prevents re-creating existing entitlements
+- Each entitlement includes: name, attribute (from column name), value (JSON)
+
 ### Security
 
 - config.json contains sensitive credentials and is gitignored
 - Never commit API tokens or configuration files
 - API token needs application management permissions
+- API token may also need Okta Identity Governance (OIG) permissions for entitlement creation

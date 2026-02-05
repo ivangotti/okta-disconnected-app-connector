@@ -482,15 +482,53 @@ From this CSV:
 - **Licensing Required**: This feature requires Okta Identity Governance (OIG) license
 - **Manual Import**: If the governance API is unavailable, the app displays the catalog with instructions for manual import
 
-### Importing Entitlements
+### Enabling Entitlement Management
 
-To import entitlements into Okta Identity Governance:
-1. Login to Okta Admin Console
+**Important**: Before the application can automatically create entitlements, you must first enable the app in Okta Identity Governance:
+
+#### Manual Setup Steps:
+1. Login to **Okta Admin Console**
 2. Navigate to **Identity Governance → Resources**
-3. Select your application
-4. Configure entitlement import/discovery settings
-5. Map CSV columns to entitlement attributes
-6. Run entitlement import to sync from your data source
+3. Click **Add application**
+4. Search for and select your application ("claude disconnected app" in the example)
+5. Click **Add** to register the app as a governance resource
+6. Once added, the app will appear in the Resources list
+7. Enable **Entitlement Management** for the application
+
+#### After Manual Setup:
+Once entitlement management is enabled manually, subsequent runs of the CSV Agent will:
+- Detect the app is registered in governance
+- Automatically create entitlements from the CSV catalog
+- Check for duplicates and only create new entitlements
+- Display creation status for each entitlement
+
+### Automatic Entitlement Creation
+
+After enabling entitlement management manually (see above), the CSV Agent will automatically:
+1. Parse CSV columns with `ent_` prefix
+2. Extract unique entitlement values
+3. Fetch the governance resource ID
+4. Check existing entitlements to avoid duplicates
+5. Create new entitlements via the Governance API
+6. Display success/failure status for each entitlement
+
+Example console output after setup:
+```
+📦 STEP 7: Entitlement Catalog & Creation
+   ✓ Governance resource found: res8x9y0zABC123XYZ456
+   ✓ Found 5 existing entitlements
+   → Creating entitlements from CSV catalog...
+
+   → Processing CostCenter entitlements:
+     ✓ CC100 (created)
+     ✓ CC200 (created)
+     • CC300 (already exists)
+
+   📊 Entitlement Creation Summary:
+     • Total unique entitlements: 20
+     • Successfully created: 15
+     • Already existed: 5
+```
 
 ### Use Cases
 
