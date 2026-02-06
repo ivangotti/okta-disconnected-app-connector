@@ -124,22 +124,206 @@ export async function getConfigInteractively() {
 
   console.log('');
   console.log('Authentication Method:');
-  console.log('  OAuth 2.0 Client Credentials (Recommended) provides scoped access');
+  console.log('  1. Device Flow (Recommended) - Authenticate as yourself in browser');
+  console.log('  2. Client Credentials - Use OAuth API Services app (requires admin setup)');
   console.log('');
 
-  const clientId = await prompt('OAuth Client ID: ');
-  const clientSecret = await prompt('OAuth Client Secret: ');
+  let authFlow;
+  while (!authFlow) {
+    const flowChoice = await prompt('Select authentication method (1 or 2): ');
+    if (flowChoice === '1' || flowChoice === '2') {
+      authFlow = flowChoice === '1' ? 'device' : 'client_credentials';
+    } else {
+      console.log('Invalid choice. Please enter 1 or 2.');
+    }
+  }
 
-  const config = {
-    oktaDomain: oktaDomain,
-    clientId: clientId.trim(),
-    clientSecret: clientSecret.trim()
-  };
+  console.log('');
+
+  let config;
+
+  if (authFlow === 'device') {
+    console.log('Device Flow Setup:');
+    console.log('  You need a Native or SPA OAuth application (any type except API Services)');
+    console.log('');
+
+    const clientId = await prompt('OAuth Client ID: ');
+
+    config = {
+      oktaDomain: oktaDomain,
+      authFlow: 'device',
+      clientId: clientId.trim()
+    };
+
+    console.log('');
+    console.log('Note: You will authenticate in your browser when the app runs.');
+  } else {
+    console.log('Client Credentials Setup:');
+    console.log('  Requires an "API Services" OAuth application with pre-granted scopes');
+    console.log('');
+
+    const clientId = await prompt('OAuth Client ID: ');
+    const clientSecret = await prompt('OAuth Client Secret: ');
+
+    config = {
+      oktaDomain: oktaDomain,
+      authFlow: 'client_credentials',
+      clientId: clientId.trim(),
+      clientSecret: clientSecret.trim()
+    };
+  }
 
   await saveConfig(config);
   console.log(`\nConfiguration saved to ${CONFIG_FILE}\n`);
 
   return config;
+}
+
+/**
+ * Get OAuth access token using device authorization flow
+ * This allows user to authenticate in browser and consent to scopes
+ */
+export async function getAccessTokenDeviceFlow(config) {
+  // Required scopes for all app operations
+  const scopes = [
+    'okta.apps.manage',
+    'okta.apps.read',
+    'okta.schemas.manage',
+    'okta.schemas.read',
+    'okta.users.read',
+    'okta.profileMappings.manage',
+    'okta.profileMappings.read',
+    'okta.governance.entitlements.manage',
+    'okta.governance.entitlements.read',
+    'okta.governance.resources.manage',
+    'okta.governance.resources.read'
+  ];
+
+  const deviceAuthUrl = `https://${config.oktaDomain}/oauth2/v1/device/authorize`;
+  const tokenUrl = `https://${config.oktaDomain}/oauth2/v1/token`;
+
+  try {
+    // Step 1: Request device code
+    console.log('   → Requesting device authorization code...');
+
+    const deviceResponse = await fetch(deviceAuthUrl, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: new URLSearchParams({
+        client_id: config.clientId,
+        scope: scopes.join(' ')
+      })
+    });
+
+    if (!deviceResponse.ok) {
+      const errorBody = await deviceResponse.text();
+      let errorData;
+
+      try {
+        errorData = JSON.parse(errorBody);
+      } catch (e) {
+        errorData = { error_description: errorBody };
+      }
+
+      // Provide helpful error messages
+      if (errorData.error === 'invalid_client') {
+        throw new Error(
+          `❌ OAuth Client Not Found or Device Flow Not Enabled!\n\n` +
+          `Client ID: ${config.clientId}\n\n` +
+          `The OAuth application must support Device Authorization Flow.\n\n` +
+          `To fix this:\n` +
+          `  1. Login to Okta Admin Console (https://${config.oktaDomain})\n` +
+          `  2. Navigate to Applications → Applications\n` +
+          `  3. Find or create an OAuth application:\n` +
+          `     - Application type: Native or Single-Page App (SPA)\n` +
+          `     - Grant type: Device Authorization (must be enabled)\n` +
+          `  4. In the application settings:\n` +
+          `     - Go to General Settings\n` +
+          `     - Scroll to "Grant type"\n` +
+          `     - Check "Device Authorization"\n` +
+          `     - Click Save\n` +
+          `  5. Copy the Client ID\n` +
+          `  6. Update your config.json with the new Client ID\n\n` +
+          `Original error: ${errorData.error_description}`
+        );
+      }
+
+      throw new Error(`Device authorization request failed: ${deviceResponse.status} - ${errorBody}`);
+    }
+
+    const deviceData = await deviceResponse.json();
+
+    // Step 2: Display instructions to user
+    console.log('');
+    console.log('   ╔════════════════════════════════════════════════════════════════╗');
+    console.log('   ║                   USER AUTHENTICATION REQUIRED                 ║');
+    console.log('   ╚════════════════════════════════════════════════════════════════╝');
+    console.log('');
+    console.log(`   🌐 Please visit: ${deviceData.verification_uri}`);
+    console.log('');
+    console.log(`   🔑 Enter code: ${deviceData.user_code}`);
+    console.log('');
+    console.log('   ⏱  Waiting for you to complete authentication...');
+    console.log('      (This code expires in ' + Math.floor(deviceData.expires_in / 60) + ' minutes)');
+    console.log('');
+
+    // Step 3: Poll for token
+    const interval = deviceData.interval || 5; // Default 5 seconds between polls
+    const expiresAt = Date.now() + (deviceData.expires_in * 1000);
+
+    while (Date.now() < expiresAt) {
+      await new Promise(resolve => setTimeout(resolve, interval * 1000));
+
+      const tokenResponse = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({
+          client_id: config.clientId,
+          device_code: deviceData.device_code,
+          grant_type: 'urn:ietf:params:oauth:grant-type:device_code'
+        })
+      });
+
+      if (tokenResponse.ok) {
+        const tokenData = await tokenResponse.json();
+        console.log('   ✓ Authentication successful!');
+        console.log('   ✓ OAuth token acquired');
+        if (tokenData.scope) {
+          console.log(`   → Granted scopes: ${tokenData.scope}`);
+        }
+        console.log('');
+        return tokenData.access_token;
+      }
+
+      const errorData = await tokenResponse.json();
+
+      if (errorData.error === 'authorization_pending') {
+        // Still waiting for user to authorize
+        process.stdout.write('   ⏳ Still waiting...\r');
+        continue;
+      }
+
+      if (errorData.error === 'slow_down') {
+        // Server wants us to slow down
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        continue;
+      }
+
+      // Any other error is terminal
+      throw new Error(`Device authorization failed: ${errorData.error} - ${errorData.error_description}`);
+    }
+
+    throw new Error('Device authorization timed out - user did not complete authentication in time');
+
+  } catch (error) {
+    throw new Error(`Device flow authentication failed: ${error.message}`);
+  }
 }
 
 /**

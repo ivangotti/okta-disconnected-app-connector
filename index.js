@@ -1,6 +1,6 @@
 import okta from '@okta/okta-sdk-nodejs';
 const { Client } = okta;
-import { getConfig, saveConfig, selectCsvFile, getAccessToken } from './config.js';
+import { getConfig, saveConfig, selectCsvFile, getAccessToken, getAccessTokenDeviceFlow } from './config.js';
 import fs from 'fs';
 import path from 'path';
 import { parse } from 'csv-parse/sync';
@@ -10,17 +10,25 @@ let cachedAccessToken = null;
 
 /**
  * Get authorization header for API calls
- * Uses OAuth Bearer token if available, falls back to SSWS
+ * Supports Device Flow, Client Credentials, and SSWS token
  */
 async function getAuthHeader(config) {
-  if (config.clientId && config.clientSecret) {
+  if (config.clientId) {
     // Use OAuth - get or reuse cached token
     if (!cachedAccessToken) {
-      cachedAccessToken = await getAccessToken(config);
+      if (config.authFlow === 'device') {
+        // Device flow - user authenticates in browser
+        cachedAccessToken = await getAccessTokenDeviceFlow(config);
+      } else if (config.clientSecret) {
+        // Client credentials flow
+        cachedAccessToken = await getAccessToken(config);
+      } else {
+        throw new Error('OAuth configuration incomplete: missing authFlow or clientSecret');
+      }
     }
     return `Bearer ${cachedAccessToken}`;
   } else if (config.apiToken) {
-    // Fallback to SSWS token
+    // Fallback to SSWS token (legacy)
     return `SSWS ${config.apiToken}`;
   } else {
     throw new Error('No authentication credentials found in configuration');
