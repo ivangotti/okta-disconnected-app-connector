@@ -569,6 +569,262 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
 }
 
 /**
+ * Check if user exists in Okta by login/email
+ */
+async function findUser(config, login) {
+  try {
+    const response = await fetch(
+      `https://${config.oktaDomain}/api/v1/users/${encodeURIComponent(login)}`,
+      {
+        headers: {
+          'Authorization': await getAuthHeader(config),
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error.message.includes('404')) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Create user in Okta
+ */
+async function createUser(config, userData) {
+  try {
+    const response = await fetch(
+      `https://${config.oktaDomain}/api/v1/users?activate=true`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': await getAuthHeader(config),
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(userData)
+      }
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorBody}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    throw error;
+  }
+}
+
+/**
+ * Update user in Okta
+ */
+async function updateUser(config, userId, userData) {
+  try {
+    const response = await fetch(
+      `https://${config.oktaDomain}/api/v1/users/${userId}`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': await getAuthHeader(config),
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(userData)
+      }
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorBody}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    throw error;
+  }
+}
+
+/**
+ * Assign user to app with profile attributes
+ */
+async function assignUserToApp(config, appId, userId, profileData) {
+  try {
+    const response = await fetch(
+      `https://${config.oktaDomain}/api/v1/apps/${appId}/users`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': await getAuthHeader(config),
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          id: userId,
+          scope: 'USER',
+          profile: profileData
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorBody}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    throw error;
+  }
+}
+
+/**
+ * Process users from CSV - create/update users and assign to app
+ */
+async function processUsers(config, appId, csvFilePath) {
+  console.log('👥 STEP 8: User Provisioning');
+  console.log('   → Reading user data from CSV...');
+
+  try {
+    const fileContent = fs.readFileSync(csvFilePath, 'utf8');
+    const records = parse(fileContent, {
+      columns: true,
+      skip_empty_lines: true,
+      trim: true
+    });
+
+    console.log(`   ✓ Found ${records.length} user(s) in CSV`);
+    console.log('');
+
+    let created = 0;
+    let updated = 0;
+    let assigned = 0;
+    let failed = 0;
+
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
+      const username = record.Username || record.username || record.email;
+
+      if (!username) {
+        console.log(`   ⚠ Skipping row - no username/email found`);
+        failed++;
+        continue;
+      }
+
+      try {
+        console.log(`   → Processing user ${i + 1}/${records.length}: ${username}`);
+
+        // Build user profile
+        const userProfile = {
+          login: username,
+          email: record.email || username,
+          firstName: record.firstName || '',
+          lastName: record.lastName || ''
+        };
+
+        // Add optional fields if present
+        if (record.employeeId) userProfile.employeeNumber = record.employeeId;
+        if (record.department) userProfile.department = record.department;
+
+        // Check if user exists
+        const existingUser = await findUser(config, username);
+
+        let userId;
+        if (existingUser) {
+          console.log(`     → User exists (${existingUser.id}), updating...`);
+          await updateUser(config, existingUser.id, { profile: userProfile });
+          userId = existingUser.id;
+          updated++;
+        } else {
+          console.log(`     → User does not exist, creating...`);
+          const newUser = await createUser(config, {
+            profile: userProfile,
+            credentials: {
+              password: { value: 'TempPass123!' } // Temporary password
+            }
+          });
+          userId = newUser.id;
+          created++;
+          console.log(`     ✓ User created (${userId})`);
+        }
+
+        // Build app user profile with custom attributes
+        const appUserProfile = {};
+
+        // Add all non-ent_* columns as app user attributes
+        for (const [key, value] of Object.entries(record)) {
+          if (!key.startsWith('ent_') && value) {
+            appUserProfile[key] = value;
+          }
+        }
+
+        // Assign user to app
+        console.log(`     → Assigning user to app...`);
+        await assignUserToApp(config, appId, userId, appUserProfile);
+        console.log(`     ✓ User assigned to app with attributes`);
+        assigned++;
+
+        // TODO: Assign entitlements (may require governance API calls)
+
+        console.log('');
+
+        // Add small delay to avoid rate limits (every 10 users)
+        if ((i + 1) % 10 === 0 && i + 1 < records.length) {
+          console.log(`   ⏸  Pausing briefly to avoid rate limits... (${i + 1}/${records.length} processed)`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          console.log('');
+        }
+      } catch (error) {
+        if (error.message.includes('429')) {
+          console.log(`     ⚠ Rate limit hit, waiting 5 seconds...`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          // Retry once
+          try {
+            await assignUserToApp(config, appId, userId, appUserProfile);
+            console.log(`     ✓ User assigned to app with attributes (retry succeeded)`);
+            assigned++;
+          } catch (retryError) {
+            console.log(`     ✗ Failed after retry: ${retryError.message}`);
+            failed++;
+          }
+        } else {
+          console.log(`     ✗ Failed: ${error.message}`);
+          failed++;
+        }
+        console.log('');
+      }
+    }
+
+    console.log('   📊 User Provisioning Summary:');
+    console.log(`     • Total users in CSV: ${records.length}`);
+    console.log(`     • Created: ${created}`);
+    console.log(`     • Updated: ${updated}`);
+    console.log(`     • Assigned to app: ${assigned}`);
+    if (failed > 0) {
+      console.log(`     • Failed: ${failed}`);
+    }
+    console.log('');
+
+  } catch (error) {
+    console.log(`   ✗ Error processing users: ${error.message}`);
+    console.log('');
+  }
+}
+
+/**
  * Get current app user schema
  */
 async function getAppUserSchema(config, appId) {
@@ -1183,6 +1439,9 @@ async function main() {
     // Process entitlements from CSV
     await processEntitlements(config, app.id, selectedCsvFile, governanceResourceId);
 
+    // Process users from CSV - create/update and assign to app
+    await processUsers(config, app.id, selectedCsvFile);
+
     console.log('');
     console.log('='.repeat(70));
     console.log('✅ Processing Complete!');
@@ -1192,9 +1451,11 @@ async function main() {
     console.log('   1. Login to Okta Admin Console');
     console.log(`   2. Navigate to Applications → ${appName}`);
     console.log('   3. Configure SAML settings (SSO URLs, Audience, etc.)');
-    console.log('   4. Review custom attributes under Provisioning → To App');
-    console.log('   5. Verify profile mappings under Provisioning → To Okta');
-    console.log('   6. Check entitlements under Identity Governance → Resources (if available)');
+    console.log('   4. Review users assigned to the app under Assignments tab');
+    console.log('   5. Review custom attributes under Provisioning → To App');
+    console.log('   6. Verify profile mappings under Provisioning → To Okta');
+    console.log('   7. Check entitlements under Identity Governance → Resources');
+    console.log('   8. Verify user entitlement assignments if governance is enabled');
     console.log('');
 
   } catch (error) {
