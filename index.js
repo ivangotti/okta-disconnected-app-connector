@@ -1,9 +1,31 @@
 import okta from '@okta/okta-sdk-nodejs';
 const { Client } = okta;
-import { getConfig, saveConfig, selectCsvFile } from './config.js';
+import { getConfig, saveConfig, selectCsvFile, getAccessToken } from './config.js';
 import fs from 'fs';
 import path from 'path';
 import { parse } from 'csv-parse/sync';
+
+// Global access token cache
+let cachedAccessToken = null;
+
+/**
+ * Get authorization header for API calls
+ * Uses OAuth Bearer token if available, falls back to SSWS
+ */
+async function getAuthHeader(config) {
+  if (config.clientId && config.clientSecret) {
+    // Use OAuth - get or reuse cached token
+    if (!cachedAccessToken) {
+      cachedAccessToken = await getAccessToken(config);
+    }
+    return `Bearer ${cachedAccessToken}`;
+  } else if (config.apiToken) {
+    // Fallback to SSWS token
+    return `SSWS ${config.apiToken}`;
+  } else {
+    throw new Error('No authentication credentials found in configuration');
+  }
+}
 
 /**
  * Find all CSV files in the current directory
@@ -18,11 +40,12 @@ function findCsvFiles() {
  */
 async function findAppByName(config, appName) {
   try {
+    const authHeader = await getAuthHeader(config);
     const response = await fetch(
       `https://${config.oktaDomain}/api/v1/apps?q=${encodeURIComponent(appName)}`,
       {
         headers: {
-          'Authorization': `SSWS ${config.apiToken}`,
+          'Authorization': authHeader,
           'Accept': 'application/json'
         }
       }
@@ -80,7 +103,7 @@ async function createSamlApp(config, appName) {
       {
         method: 'POST',
         headers: {
-          'Authorization': `SSWS ${config.apiToken}`,
+          'Authorization': await getAuthHeader(config),
           'Accept': 'application/json',
           'Content-Type': 'application/json'
         },
@@ -221,7 +244,7 @@ async function registerGovernanceResource(config, appId) {
       {
         method: 'POST',
         headers: {
-          'Authorization': `SSWS ${config.apiToken}`,
+          'Authorization': await getAuthHeader(config),
           'Accept': 'application/json',
           'Content-Type': 'application/json'
         },
@@ -254,7 +277,7 @@ async function enableEntitlementManagement(config, resourceId) {
       {
         method: 'PUT',
         headers: {
-          'Authorization': `SSWS ${config.apiToken}`,
+          'Authorization': await getAuthHeader(config),
           'Accept': 'application/json',
           'Content-Type': 'application/json'
         },
@@ -285,7 +308,7 @@ async function createEntitlement(config, resourceId, entitlementData) {
       {
         method: 'POST',
         headers: {
-          'Authorization': `SSWS ${config.apiToken}`,
+          'Authorization': await getAuthHeader(config),
           'Accept': 'application/json',
           'Content-Type': 'application/json'
         },
@@ -314,7 +337,7 @@ async function getGovernanceResourceId(config, appId) {
       `https://${config.oktaDomain}/governance/api/v1/resources?filter=source.id eq "${appId}"`,
       {
         headers: {
-          'Authorization': `SSWS ${config.apiToken}`,
+          'Authorization': await getAuthHeader(config),
           'Accept': 'application/json'
         }
       }
@@ -345,7 +368,7 @@ async function getAppEntitlements(config, resourceId) {
       `https://${config.oktaDomain}/governance/api/v1/resources/${resourceId}/entitlements`,
       {
         headers: {
-          'Authorization': `SSWS ${config.apiToken}`,
+          'Authorization': await getAuthHeader(config),
           'Accept': 'application/json'
         }
       }
@@ -496,7 +519,7 @@ async function getAppUserSchema(config, appId) {
       `https://${config.oktaDomain}/api/v1/meta/schemas/apps/${appId}/default`,
       {
         headers: {
-          'Authorization': `SSWS ${config.apiToken}`,
+          'Authorization': await getAuthHeader(config),
           'Accept': 'application/json'
         }
       }
@@ -631,7 +654,7 @@ async function getProfileMapping(config, appId) {
       `https://${config.oktaDomain}/api/v1/mappings?sourceId=${appId}`,
       {
         headers: {
-          'Authorization': `SSWS ${config.apiToken}`,
+          'Authorization': await getAuthHeader(config),
           'Accept': 'application/json'
         }
       }
@@ -659,7 +682,7 @@ async function updateProfileMapping(config, mappingId, mappingProperties) {
       {
         method: 'POST',
         headers: {
-          'Authorization': `SSWS ${config.apiToken}`,
+          'Authorization': await getAuthHeader(config),
           'Accept': 'application/json',
           'Content-Type': 'application/json'
         },
@@ -709,7 +732,7 @@ async function createCustomAttribute(config, appId, attributeName) {
       {
         method: 'POST',
         headers: {
-          'Authorization': `SSWS ${config.apiToken}`,
+          'Authorization': await getAuthHeader(config),
           'Accept': 'application/json',
           'Content-Type': 'application/json'
         },

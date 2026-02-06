@@ -122,17 +122,86 @@ export async function getConfigInteractively() {
     }
   }
 
-  const apiToken = await prompt('Okta API Token: ');
+  console.log('');
+  console.log('Authentication Method:');
+  console.log('  OAuth 2.0 Client Credentials (Recommended) provides scoped access');
+  console.log('');
+
+  const clientId = await prompt('OAuth Client ID: ');
+  const clientSecret = await prompt('OAuth Client Secret: ');
 
   const config = {
     oktaDomain: oktaDomain,
-    apiToken: apiToken.trim()
+    clientId: clientId.trim(),
+    clientSecret: clientSecret.trim()
   };
 
   await saveConfig(config);
   console.log(`\nConfiguration saved to ${CONFIG_FILE}\n`);
 
   return config;
+}
+
+/**
+ * Get OAuth access token using client credentials flow
+ */
+export async function getAccessToken(config) {
+  // Required scopes for all app operations
+  // Note: These scopes must be granted to the OAuth client in Okta Admin Console
+  const scopes = [
+    'okta.apps.manage',
+    'okta.apps.read',
+    'okta.schemas.manage',
+    'okta.schemas.read',
+    'okta.users.read',
+    'okta.profileMappings.manage',
+    'okta.profileMappings.read',
+    'okta.governance.entitlements.manage',
+    'okta.governance.entitlements.read',
+    'okta.governance.resources.manage',
+    'okta.governance.resources.read'
+  ];
+
+  const tokenUrl = `https://${config.oktaDomain}/oauth2/v1/token`;
+
+  // Encode client credentials for Basic Auth
+  const credentials = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
+
+  try {
+    const response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${credentials}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        scope: scopes.join(' ')
+      })
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+
+      // Check if it's a scope error
+      if (errorBody.includes('invalid_scope') || errorBody.includes('Custom scopes')) {
+        throw new Error(
+          `OAuth client missing required scopes. Please grant these scopes in Okta Admin Console:\n` +
+          `  Applications → OAuth Applications → ${config.clientId} → Okta API Scopes\n` +
+          `  Required scopes:\n    ` + scopes.join('\n    ') +
+          `\n\nOriginal error: ${errorBody}`
+        );
+      }
+
+      throw new Error(`Failed to get access token: ${response.status} - ${errorBody}`);
+    }
+
+    const tokenData = await response.json();
+    return tokenData.access_token;
+  } catch (error) {
+    throw new Error(`OAuth token request failed: ${error.message}`);
+  }
 }
 
 /**
@@ -151,6 +220,30 @@ export async function getConfig() {
       console.log(`   ${validation.error}\n`);
       console.log('Please reconfigure:\n');
       config = await getConfigInteractively();
+    }
+
+    // Check if we need to migrate from SSWS token to OAuth
+    if (config.apiToken && !config.clientId) {
+      console.log('\n⚠️  Warning: Configuration uses legacy SSWS token authentication');
+      console.log('   For better security and governance access, consider migrating to OAuth 2.0');
+      console.log('   Current limitations with SSWS:');
+      console.log('     • May not have access to all governance APIs');
+      console.log('     • Less granular permission control');
+      console.log('');
+      const migrate = await prompt('Would you like to migrate to OAuth now? (y/n): ');
+
+      if (migrate.toLowerCase() === 'y' || migrate.toLowerCase() === 'yes') {
+        console.log('');
+        const clientId = await prompt('OAuth Client ID: ');
+        const clientSecret = await prompt('OAuth Client Secret: ');
+
+        config.clientId = clientId.trim();
+        config.clientSecret = clientSecret.trim();
+        // Keep apiToken as fallback
+
+        await saveConfig(config);
+        console.log('\n✓ Configuration updated with OAuth credentials\n');
+      }
     }
   }
 
