@@ -184,20 +184,10 @@ export async function getConfigInteractively() {
  * This allows user to authenticate in browser and consent to scopes
  */
 export async function getAccessTokenDeviceFlow(config) {
-  // Required scopes for all app operations
-  const scopes = [
-    'okta.apps.manage',
-    'okta.apps.read',
-    'okta.schemas.manage',
-    'okta.schemas.read',
-    'okta.users.read',
-    'okta.profileMappings.manage',
-    'okta.profileMappings.read',
-    'okta.governance.entitlements.manage',
-    'okta.governance.entitlements.read',
-    'okta.governance.resources.manage',
-    'okta.governance.resources.read'
-  ];
+  // For Okta Management APIs with device flow, we use standard OpenID scopes
+  // The user's Okta admin permissions determine what API operations they can perform
+  // Custom Okta Management scopes (okta.apps.manage, etc.) are not allowed in device flow
+  const scopes = ['openid', 'profile', 'email', 'okta.users.read'];
 
   const deviceAuthUrl = `https://${config.oktaDomain}/oauth2/v1/device/authorize`;
   const tokenUrl = `https://${config.oktaDomain}/oauth2/v1/token`;
@@ -207,7 +197,7 @@ export async function getAccessTokenDeviceFlow(config) {
     console.log('   → Requesting device authorization code...');
     console.log(`   → Device auth URL: ${deviceAuthUrl}`);
     console.log(`   → Client ID: ${config.clientId}`);
-    console.log(`   → Requesting scopes: ${scopes.join(' ')}`);
+    console.log(`   → Authentication: Device flow uses your Okta admin permissions`);
 
     const deviceResponse = await fetch(deviceAuthUrl, {
       method: 'POST',
