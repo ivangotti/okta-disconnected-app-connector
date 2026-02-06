@@ -18,18 +18,55 @@ npm install
 
 ### 2. Configure Okta Credentials
 
-The application will automatically prompt for configuration on first run. You'll need:
+The application uses **OAuth 2.0 Client Credentials** flow for secure, scoped API access.
+
+#### Create an OAuth Application in Okta
+
+1. Login to **Okta Admin Console**
+2. Navigate to **Applications → Applications**
+3. Click **Create App Integration**
+4. Select **API Services** (for OAuth 2.0 client credentials)
+5. Click **Next**
+6. Enter application name (e.g., "CSV Agent")
+7. Click **Save**
+8. Note the **Client ID** and **Client Secret** (you'll need these)
+
+#### Grant Required Scopes
+
+After creating the OAuth application, grant it the necessary Okta API scopes:
+
+1. In the OAuth application settings, go to **Okta API Scopes** tab
+2. Click **Grant** for each of the following scopes:
+
+**Application Management:**
+- `okta.apps.manage` - Create and manage applications
+- `okta.apps.read` - Read application information
+- `okta.schemas.manage` - Create custom attributes
+- `okta.schemas.read` - Read schema information
+
+**User & Mapping:**
+- `okta.users.read` - Read user information
+- `okta.profileMappings.manage` - Create profile mappings
+- `okta.profileMappings.read` - Read profile mappings
+
+**Governance (Optional - for entitlement features):**
+- `okta.governance.entitlements.manage` - Create entitlements
+- `okta.governance.entitlements.read` - Read entitlements
+- `okta.governance.resources.manage` - Manage governance resources
+- `okta.governance.resources.read` - Read governance resources
+
+#### Configure the Application
+
+On first run, the application will prompt for:
 
 - **Okta Tenant URL**: Your Okta domain
   - Examples: `your-tenant.okta.com` or `https://your-tenant.okta.com`
   - The app accepts domains with or without `https://` protocol
   - Must end with `.okta.com` or `.oktapreview.com`
   - Find this in your Okta admin console URL
-  - The app will validate and normalize the domain automatically
 
-- **API Token**: An Okta API token with appropriate permissions
-  - Generate in Okta Admin Console: Security → API → Tokens
-  - Needs application management permissions
+- **OAuth Client ID**: From the OAuth application you created
+- **OAuth Client Secret**: From the OAuth application you created
 
 The configuration will be saved to `config.json` for future runs.
 
@@ -39,12 +76,13 @@ Alternatively, create a `config.json` file manually:
 ```json
 {
   "oktaDomain": "your-tenant.okta.com",
-  "apiToken": "your-api-token",
+  "clientId": "0oaxxxxxxxxxxxxx",
+  "clientSecret": "your-client-secret",
   "selectedCsvFile": "My Application.csv"
 }
 ```
 
-Note: All configuration (Okta credentials and CSV file selection) is stored in the same `config.json` file.
+**Note:** All configuration (Okta credentials and CSV file selection) is stored in the same `config.json` file.
 
 ## Usage
 
