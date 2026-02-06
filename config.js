@@ -146,28 +146,18 @@ export async function getConfigInteractively() {
  * Get OAuth access token using client credentials flow
  */
 export async function getAccessToken(config) {
-  // Required scopes for all app operations
-  // Note: These scopes must be granted to the OAuth client in Okta Admin Console
-  const scopes = [
-    'okta.apps.manage',
-    'okta.apps.read',
-    'okta.schemas.manage',
-    'okta.schemas.read',
-    'okta.users.read',
-    'okta.profileMappings.manage',
-    'okta.profileMappings.read',
-    'okta.governance.entitlements.manage',
-    'okta.governance.entitlements.read',
-    'okta.governance.resources.manage',
-    'okta.governance.resources.read'
-  ];
-
+  // For Okta Management APIs, scopes are pre-granted in Admin Console
+  // We don't request specific scopes in the token request - Okta will include
+  // all scopes that were granted to this client in the Admin Console
   const tokenUrl = `https://${config.oktaDomain}/oauth2/v1/token`;
 
   // Encode client credentials for Basic Auth
   const credentials = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
 
   try {
+    console.log(`   → Requesting OAuth token from: ${tokenUrl}`);
+    console.log(`   → Client ID: ${config.clientId}`);
+
     const response = await fetch(tokenUrl, {
       method: 'POST',
       headers: {
@@ -176,21 +166,57 @@ export async function getAccessToken(config) {
         'Content-Type': 'application/x-www-form-urlencoded'
       },
       body: new URLSearchParams({
-        grant_type: 'client_credentials',
-        scope: scopes.join(' ')
+        grant_type: 'client_credentials'
+        // Note: No scope parameter - uses pre-granted scopes from Admin Console
       })
     });
 
     if (!response.ok) {
       const errorBody = await response.text();
+      console.log(`   ✗ Token request failed: ${response.status}`);
+      console.log(`   → Response: ${errorBody}`);
 
-      // Check if it's a scope error
-      if (errorBody.includes('invalid_scope') || errorBody.includes('Custom scopes')) {
+      let errorData;
+
+      try {
+        errorData = JSON.parse(errorBody);
+      } catch (e) {
+        errorData = { error_description: errorBody };
+      }
+
+      // Provide helpful error messages
+      if (errorData.error === 'invalid_client') {
+        // Check if it's the application_type issue
+        if (errorData.error_description && errorData.error_description.includes('application_type')) {
+          throw new Error(
+            `❌ OAuth Application Type Mismatch!\n\n` +
+            `The OAuth application (${config.clientId}) must be created as "API Services" type.\n\n` +
+            `Current error: ${errorData.error_description}\n\n` +
+            `To fix this:\n` +
+            `  1. Login to Okta Admin Console (https://${config.oktaDomain})\n` +
+            `  2. Navigate to Applications → Applications\n` +
+            `  3. Create a NEW app integration:\n` +
+            `     - Click "Create App Integration"\n` +
+            `     - Select "API Services" (NOT Web, Native, or SPA)\n` +
+            `     - Give it a name (e.g., "CSV Agent")\n` +
+            `     - Click Save\n` +
+            `  4. Copy the new Client ID and Client Secret\n` +
+            `  5. Update your config.json with the new credentials\n` +
+            `  6. Grant required Okta API Scopes in the "Okta API Scopes" tab\n\n` +
+            `Note: The current client ${config.clientId} appears to be the wrong type\n` +
+            `(e.g., Web, Native, or SPA application instead of API Services).`
+          );
+        }
+
         throw new Error(
-          `OAuth client missing required scopes. Please grant these scopes in Okta Admin Console:\n` +
-          `  Applications → OAuth Applications → ${config.clientId} → Okta API Scopes\n` +
-          `  Required scopes:\n    ` + scopes.join('\n    ') +
-          `\n\nOriginal error: ${errorBody}`
+          `Invalid OAuth client credentials.\n` +
+          `Please verify in Okta Admin Console:\n` +
+          `  1. Navigate to Applications → Applications\n` +
+          `  2. Find the OAuth application: ${config.clientId}\n` +
+          `  3. Verify the Client Secret matches\n` +
+          `  4. Ensure the app is ACTIVE\n` +
+          `  5. Check that it's an "API Services" application type\n\n` +
+          `Original error: ${errorData.error_description || errorBody}`
         );
       }
 
@@ -198,6 +224,13 @@ export async function getAccessToken(config) {
     }
 
     const tokenData = await response.json();
+
+    // Log the scopes we received for debugging
+    console.log('   ✓ OAuth token acquired successfully');
+    if (tokenData.scope) {
+      console.log(`   → Granted scopes: ${tokenData.scope}`);
+    }
+
     return tokenData.access_token;
   } catch (error) {
     throw new Error(`OAuth token request failed: ${error.message}`);
