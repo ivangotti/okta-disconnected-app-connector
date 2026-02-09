@@ -45,15 +45,81 @@ npm run dev
 
 On first run, the application prompts for Okta credentials and saves them to `config.json`.
 
+### Configuration File (`config.json`)
+
+The configuration file stores your Okta connection settings. It is automatically created on first run, or you can create it manually.
+
+#### Example: OAuth with Client Credentials (Recommended)
+
+```json
+{
+  "oktaDomain": "your-company.okta.com",
+  "clientId": "0oa1234567890abcdef",
+  "clientSecret": "your-client-secret-here",
+  "selectedCsvFile": "My Application.csv"
+}
+```
+
+#### Example: OAuth with Private Key JWT
+
+```json
+{
+  "oktaDomain": "your-company.okta.com",
+  "clientId": "0oa1234567890abcdef",
+  "privateKeyPath": "./private-key.pem",
+  "selectedCsvFile": "My Application.csv"
+}
+```
+
+#### Example: Device Flow (Interactive)
+
+```json
+{
+  "oktaDomain": "your-company.okta.com",
+  "authFlow": "device",
+  "clientId": "0oa1234567890abcdef",
+  "selectedCsvFile": "My Application.csv"
+}
+```
+
+#### Example: SSWS Token + OAuth (Hybrid)
+
+Some governance APIs require SSWS tokens. You can configure both:
+
+```json
+{
+  "oktaDomain": "your-company.okta.com",
+  "clientId": "0oa1234567890abcdef",
+  "clientSecret": "your-client-secret-here",
+  "apiToken": "00abc123XYZ_your-ssws-token-here",
+  "selectedCsvFile": "My Application.csv"
+}
+```
+
+### Configuration Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `oktaDomain` | Yes | Your Okta tenant domain (e.g., `company.okta.com`) |
+| `clientId` | Yes* | OAuth application Client ID |
+| `clientSecret` | No | OAuth client secret (for client_credentials flow) |
+| `privateKeyPath` | No | Path to private key PEM file (for private_key_jwt) |
+| `authFlow` | No | Set to `"device"` for interactive browser auth |
+| `apiToken` | No | SSWS API token (legacy, needed for some governance APIs) |
+| `selectedCsvFile` | No | Remembers your CSV file selection |
+
+*Required unless using SSWS token only (legacy)
+
 ### Authentication Options
 
-1. **Device Flow** (Recommended for users): Authenticate via browser
-2. **Client Credentials**: For service-to-service with OAuth app
-3. **SSWS Token**: Legacy API token (required for some governance APIs)
+1. **Client Credentials** (Recommended for automation): Use `clientId` + `clientSecret`
+2. **Private Key JWT** (Most secure): Use `clientId` + `privateKeyPath`
+3. **Device Flow** (Interactive): Use `clientId` + `authFlow: "device"` - authenticates in browser
+4. **SSWS Token** (Legacy): Use `apiToken` only - some governance APIs still require this
 
 ### Required OAuth Scopes
 
-Grant these scopes to your OAuth application:
+Grant these scopes to your OAuth application in Okta Admin Console:
 
 ```
 okta.apps.manage, okta.apps.read
@@ -255,7 +321,6 @@ Grants are created using the Okta Governance API:
 ├── config.js          # Configuration management
 ├── config.json        # Credentials storage (gitignored)
 ├── package.json       # Dependencies
-├── CLAUDE.md          # AI assistant instructions
 └── README.md          # This file
 ```
 

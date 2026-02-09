@@ -7,3 +7,4 @@ config.json
 private-key.pem
 public-key.pem
 *.pem
+CLAUDE.md
