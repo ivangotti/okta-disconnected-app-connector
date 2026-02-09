@@ -9,6 +9,33 @@ import { parse } from 'csv-parse/sync';
 let cachedAccessToken = null;
 
 /**
+ * Generate a secure random password for new users
+ * Meets typical password complexity requirements
+ */
+function generateSecurePassword() {
+  const lowercase = 'abcdefghijklmnopqrstuvwxyz';
+  const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const numbers = '0123456789';
+  const symbols = '!@#$%^&*';
+  const allChars = lowercase + uppercase + numbers + symbols;
+
+  // Ensure at least one of each required character type
+  let password = '';
+  password += lowercase[Math.floor(Math.random() * lowercase.length)];
+  password += uppercase[Math.floor(Math.random() * uppercase.length)];
+  password += numbers[Math.floor(Math.random() * numbers.length)];
+  password += symbols[Math.floor(Math.random() * symbols.length)];
+
+  // Fill the rest with random characters (total 16 chars)
+  for (let i = 4; i < 16; i++) {
+    password += allChars[Math.floor(Math.random() * allChars.length)];
+  }
+
+  // Shuffle the password
+  return password.split('').sort(() => Math.random() - 0.5).join('');
+}
+
+/**
  * Get authorization header for API calls
  * Supports Device Flow, Client Credentials, and SSWS token
  */
@@ -382,6 +409,60 @@ async function getGovernanceResourceId(config, appId) {
 }
 
 /**
+ * Fetch entitlement by name from Okta Governance
+ * Used when we need to get an existing entitlement that we couldn't create
+ */
+async function getEntitlementByName(config, appId, entitlementName) {
+  try {
+    const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
+
+    // Try to filter by name and parent application
+    const filter = encodeURIComponent(`name eq "${entitlementName}" and parent.externalId eq "${appId}"`);
+    const response = await fetch(
+      `https://${config.oktaDomain}/governance/api/v1/entitlements?filter=${filter}`,
+      {
+        headers: {
+          'Authorization': authHeader,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    if (response.ok) {
+      const result = await response.json();
+      if (Array.isArray(result) && result.length > 0) {
+        return result[0];
+      }
+    }
+
+    // If filter didn't work, try without filter and search manually
+    const allResponse = await fetch(
+      `https://${config.oktaDomain}/governance/api/v1/entitlements?limit=200`,
+      {
+        headers: {
+          'Authorization': authHeader,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    if (allResponse.ok) {
+      const allEntitlements = await allResponse.json();
+      if (Array.isArray(allEntitlements)) {
+        return allEntitlements.find(ent =>
+          ent.name && ent.name.toLowerCase() === entitlementName.toLowerCase() &&
+          ent.parent && ent.parent.externalId === appId
+        );
+      }
+    }
+
+    return null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
  * Get existing entitlements for an app
  * Tries multiple endpoint patterns to find the correct one
  */
@@ -569,8 +650,27 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
       }
       created++;
     } catch (error) {
-      console.log(`     ✗ ${attributeName} failed: ${error.message}`);
-      failed++;
+      // Check if error is because entitlement already exists
+      if (error.message.includes('needs to be unique')) {
+        console.log(`     ⊘ ${attributeName} entitlement already exists, fetching...`);
+        try {
+          const existingEnt = await getEntitlementByName(config, appId, attributeName);
+          if (existingEnt && existingEnt.id) {
+            console.log(`     ✓ Found existing ${attributeName} entitlement (${existingEnt.id})`);
+            createdEntitlements[attributeName.toLowerCase()] = existingEnt;
+            skipped++;
+          } else {
+            console.log(`     ⚠ Could not fetch existing ${attributeName} entitlement`);
+            failed++;
+          }
+        } catch (fetchError) {
+          console.log(`     ⚠ Error fetching existing entitlement: ${fetchError.message}`);
+          failed++;
+        }
+      } else {
+        console.log(`     ✗ ${attributeName} failed: ${error.message}`);
+        failed++;
+      }
     }
     console.log('');
   }
@@ -712,28 +812,28 @@ async function assignUserToApp(config, appId, userId, profileData) {
 }
 
 /**
- * Assign a single entitlement grant to a user
- * Uses the Grants API which is the proper way to assign entitlements
+ * Create entitlement grant for a user using the correct Okta Governance API format
+ * Creates a single grant with all user entitlements
  */
-async function createEntitlementGrant(config, resourceId, userId, entitlementId, entitlementValueId = null) {
+async function createEntitlementGrant(config, appId, userId, entitlementsArray) {
   try {
     // Use SSWS token for governance endpoints if available
     const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
 
+    // Build the grant payload in the correct Okta format
     const grantData = {
-      grantType: "ENTITLEMENT",
-      principalId: userId,
-      resourceId: resourceId,
-      entitlementId: entitlementId,
+      grantType: "CUSTOM",
+      targetPrincipal: {
+        externalId: userId,
+        type: "OKTA_USER"
+      },
+      actor: "ADMIN",
       target: {
-        externalId: userId
-      }
+        externalId: appId,
+        type: "APPLICATION"
+      },
+      entitlements: entitlementsArray
     };
-
-    // Add entitlement value ID for multiValue entitlements
-    if (entitlementValueId) {
-      grantData.entitlementValueId = entitlementValueId;
-    }
 
     const response = await fetch(
       `https://${config.oktaDomain}/governance/api/v1/grants`,
@@ -780,14 +880,25 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
     let created = 0;
     let updated = 0;
     let assigned = 0;
+    let grantsCreated = 0;
     let failed = 0;
 
     for (let i = 0; i < records.length; i++) {
       const record = records[i];
-      const username = record.Username || record.username || record.email;
+
+      // Dynamically find username/login column (try common variations)
+      const usernameKeys = ['username', 'login', 'email', 'user', 'userid', 'user_id', 'mail'];
+      let username = null;
+      for (const key of usernameKeys) {
+        const matchingCol = Object.keys(record).find(col => col.toLowerCase() === key);
+        if (matchingCol && record[matchingCol]) {
+          username = record[matchingCol];
+          break;
+        }
+      }
 
       if (!username) {
-        console.log(`   ⚠ Skipping row - no username/email found`);
+        console.log(`   ⚠ Skipping row - no username/email column found (tried: ${usernameKeys.join(', ')})`);
         failed++;
         continue;
       }
@@ -799,17 +910,25 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
       try {
         console.log(`   → Processing user ${i + 1}/${records.length}: ${username}`);
 
-        // Build user profile
+        // Build user profile dynamically from CSV columns using attribute mapping
         const userProfile = {
           login: username,
-          email: record.email || username,
-          firstName: record.firstName || '',
-          lastName: record.lastName || ''
+          email: username // Default email to username if not found
         };
 
-        // Add optional fields if present
-        if (record.employeeId) userProfile.employeeNumber = record.employeeId;
-        if (record.department) userProfile.department = record.department;
+        // Dynamically map CSV columns to Okta user profile fields
+        for (const [csvColumn, value] of Object.entries(record)) {
+          if (!value || csvColumn.startsWith('ent_')) continue; // Skip empty and entitlement columns
+
+          const oktaAttribute = findMatchingOktaAttribute(csvColumn);
+          if (oktaAttribute) {
+            userProfile[oktaAttribute] = value;
+          }
+        }
+
+        // Ensure required fields have at least empty values
+        if (!userProfile.firstName) userProfile.firstName = '';
+        if (!userProfile.lastName) userProfile.lastName = '';
 
         // Check if user exists
         const existingUser = await findUser(config, username);
@@ -820,15 +939,17 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
           updated++;
         } else {
           console.log(`     → User does not exist, creating...`);
+          // Generate a random secure password for new users
+          const randomPassword = generateSecurePassword();
           const newUser = await createUser(config, {
             profile: userProfile,
             credentials: {
-              password: { value: 'TempPass123!' } // Temporary password
+              password: { value: randomPassword }
             }
           });
           userId = newUser.id;
           created++;
-          console.log(`     ✓ User created (${userId})`);
+          console.log(`     ✓ User created (${userId}) - password reset required on first login`);
         }
 
         // Build app user profile with custom attributes INCLUDING entitlements
@@ -842,10 +963,86 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
         }
 
         // Assign user to app with ALL attributes (including ent_* entitlements)
-        console.log(`     → Assigning user to app with entitlements...`);
+        console.log(`     → Assigning user to app...`);
         await assignUserToApp(config, appId, userId, appUserProfile);
-        console.log(`     ✓ User assigned to app with attributes and entitlements`);
+        console.log(`     ✓ User assigned to app with attributes`);
         assigned++;
+
+        // Create governance grant with entitlements
+        if (resourceId && Object.keys(entitlementsMap).length > 0) {
+          // Build entitlements array in correct format for Grants API
+          const entitlementsForGrant = {};
+
+          // Parse ent_* columns for this user
+          for (const [key, value] of Object.entries(record)) {
+            if (key.startsWith('ent_') && value) {
+              const entitlementName = key.substring(4); // Remove 'ent_' prefix
+              const entitlement = entitlementsMap[entitlementName.toLowerCase()];
+
+              if (entitlement && entitlement.id && entitlement.values) {
+                // Split comma-separated values and deduplicate
+                const csvValues = [...new Set(value.split(',').map(v => v.trim()).filter(v => v))];
+
+                // Find matching value IDs
+                for (const val of csvValues) {
+                  const entValue = entitlement.values.find(
+                    ev => ev.name && ev.name.toLowerCase() === val.toLowerCase()
+                  );
+
+                  if (entValue && entValue.id) {
+                    // Group by entitlement ID
+                    if (!entitlementsForGrant[entitlement.id]) {
+                      entitlementsForGrant[entitlement.id] = {
+                        id: entitlement.id,
+                        values: []
+                      };
+                    }
+                    // Check if this value ID is already added (avoid duplicates)
+                    const alreadyAdded = entitlementsForGrant[entitlement.id].values.some(
+                      v => v.id === entValue.id
+                    );
+                    if (!alreadyAdded) {
+                      // Include full value object with id, name, description, and label
+                      entitlementsForGrant[entitlement.id].values.push({
+                        id: entValue.id,
+                        name: entValue.name || val,
+                        description: entValue.description || val,
+                        label: entValue.name || val
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Convert to array
+          const entitlementsArray = Object.values(entitlementsForGrant);
+
+          if (entitlementsArray.length > 0) {
+            try {
+              console.log(`     → Creating governance grant with ${entitlementsArray.length} entitlement(s)...`);
+
+              // Debug: log the payload for first user
+              if (i === 0) {
+                console.log(`     → Debug payload:`, JSON.stringify({
+                  grantType: "CUSTOM",
+                  targetPrincipal: { externalId: userId, type: "OKTA_USER" },
+                  actor: "ADMIN",
+                  target: { externalId: appId, type: "APPLICATION" },
+                  entitlements: entitlementsArray
+                }, null, 2).substring(0, 800));
+              }
+
+              await createEntitlementGrant(config, appId, userId, entitlementsArray);
+              console.log(`     ✓ Governance grant created`);
+              grantsCreated++;
+            } catch (error) {
+              console.log(`     ⚠ Grant creation failed: ${error.message}`);
+              // Don't fail the whole user - they're still assigned to the app
+            }
+          }
+        }
 
         console.log('');
 
@@ -880,7 +1077,10 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
     console.log(`     • Total users in CSV: ${records.length}`);
     console.log(`     • Created: ${created}`);
     console.log(`     • Updated: ${updated}`);
-    console.log(`     • Assigned to app with entitlements: ${assigned}`);
+    console.log(`     • Assigned to app: ${assigned}`);
+    if (grantsCreated > 0) {
+      console.log(`     • Governance grants created: ${grantsCreated}`);
+    }
     if (failed > 0) {
       console.log(`     • Failed: ${failed}`);
     }
