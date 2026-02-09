@@ -8,7 +8,7 @@ A Node.js application that automates SAML 2.0 application creation, user provisi
 - **Custom Attributes**: Creates app user schema attributes from CSV columns
 - **Profile Mapping**: Intelligently maps CSV columns to Okta user profile fields
 - **User Provisioning**: Creates/updates users and assigns them to applications
-- **Entitlement Management**: Creates entitlements from `ent_*` columns and assigns them to users
+- **Entitlement Management**: Automatically enables governance, creates entitlements, and grants them to users - **no manual setup required**
 - **Dynamic Processing**: Works with any CSV structure - no hardcoded column names
 
 ## Prerequisites
@@ -128,6 +128,16 @@ The application executes an 8-step workflow:
 ```
 
 ## Entitlement Management
+
+### Fully Automatic - No Manual Setup Required
+
+The application **automatically enables entitlement management** for your app in Okta Identity Governance. No manual intervention needed:
+
+1. **Auto-registers** the app with Okta Governance via opt-in API
+2. **Auto-creates** all entitlements from CSV `ent_*` columns
+3. **Auto-grants** entitlements to each user based on their CSV values
+
+Just run `npm start` and everything is configured automatically.
 
 ### How Entitlements Work
 
