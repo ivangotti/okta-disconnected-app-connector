@@ -1,10 +1,21 @@
-# CSV Agent - Okta Application Automation
+# CSV Agent - Okta Identity Governance Automation
 
-A Node.js application that automates SAML 2.0 application creation, user provisioning, and **entitlement management** in Okta based on CSV files.
+A Node.js application that automates **Disconnected Application** creation for **Okta Identity Governance (OIG)**, enabling full governance capabilities for applications that don't have direct Okta integration.
+
+## Why Disconnected Apps?
+
+Disconnected applications in Okta Identity Governance allow you to:
+
+- **Access Requests**: Users can request access to application entitlements through self-service
+- **Access Reviews/Certifications**: Managers can periodically review and certify user access
+- **Segregation of Duties (SoD)**: Define and enforce policies that prevent toxic access combinations
+- **Audit & Compliance**: Track who has access to what, with full history
+
+**Note**: The application does NOT need to have authentication (SAML/OIDC) configured. The app serves as a governance container for managing entitlements and access - actual authentication to the target system is handled separately.
 
 ## Features
 
-- **SAML App Creation**: Automatically creates SAML 2.0 applications from CSV filenames
+- **Disconnected App Creation**: Automatically creates applications from CSV filenames for OIG governance
 - **Custom Attributes**: Creates app user schema attributes from CSV columns
 - **Profile Mapping**: Intelligently maps CSV columns to Okta user profile fields
 - **User Provisioning**: Creates/updates users and assigns them to applications
@@ -108,7 +119,7 @@ The application executes an 8-step workflow:
 │  → Scans directory for .csv files, prompts if multiple found        │
 ├─────────────────────────────────────────────────────────────────────┤
 │  STEP 3: Application Processing                                     │
-│  → Creates SAML 2.0 app (or finds existing) using CSV filename      │
+│  → Creates disconnected app (or finds existing) using CSV filename  │
 ├─────────────────────────────────────────────────────────────────────┤
 │  STEP 4: Entitlement Management Configuration                       │
 │  → Registers app with Okta Governance, enables entitlement mgmt     │
@@ -196,7 +207,7 @@ Grants are created using the Okta Governance API:
 
 ```
 ======================================================================
-  CSV Agent - Okta SAML Application Automation
+  CSV Agent - Okta Identity Governance Automation
 ======================================================================
 
 📋 STEP 1: Loading Configuration
@@ -253,7 +264,7 @@ Grants are created using the Okta Governance API:
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /api/v1/apps` | Search for existing apps |
-| `POST /api/v1/apps` | Create SAML application |
+| `POST /api/v1/apps` | Create disconnected application |
 | `GET/POST /api/v1/meta/schemas/apps/{id}` | Manage app user schema |
 | `GET/POST /api/v1/mappings` | Profile attribute mappings |
 | `GET/POST /api/v1/users` | User management |
