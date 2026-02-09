@@ -147,8 +147,8 @@ function getCsvColumns(csvFilePath) {
     // Get column names from the parsed data
     const columns = Object.keys(records[0] || {});
 
-    // Filter out columns starting with "ent_"
-    return columns.filter(col => !col.startsWith('ent_'));
+    // Return ALL columns (including ent_* entitlement columns)
+    return columns;
   } catch (error) {
     throw new Error(`Error reading CSV file: ${error.message}`);
   }
@@ -171,14 +171,11 @@ function getCsvColumnsWithDetails(csvFilePath) {
     // Get column names from the parsed data
     const allColumns = Object.keys(records[0] || {});
 
-    // Separate included and excluded columns
-    const included = allColumns.filter(col => !col.startsWith('ent_'));
-    const excluded = allColumns.filter(col => col.startsWith('ent_'));
-
+    // Include ALL columns (including ent_* columns as custom attributes)
     return {
       total: allColumns.length,
-      included: included,
-      excluded: excluded
+      included: allColumns,  // All columns
+      excluded: []           // No longer excluding ent_* columns
     };
   } catch (error) {
     throw new Error(`Error reading CSV file: ${error.message}`);
@@ -724,9 +721,13 @@ async function createEntitlementGrant(config, resourceId, userId, entitlementId,
     const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
 
     const grantData = {
+      grantType: "ENTITLEMENT",
       principalId: userId,
       resourceId: resourceId,
-      entitlementId: entitlementId
+      entitlementId: entitlementId,
+      target: {
+        externalId: userId
+      }
     };
 
     // Add entitlement value ID for multiValue entitlements
@@ -776,20 +777,9 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
     console.log(`   ✓ Found ${records.length} user(s) in CSV`);
     console.log('');
 
-    // Use the entitlements map passed from processEntitlements
-    if (resourceId && Object.keys(entitlementsMap).length > 0) {
-      console.log(`   ✓ Using ${Object.keys(entitlementsMap).length} entitlement(s) from Step 7`);
-      console.log('');
-    } else if (resourceId) {
-      console.log(`   ⚠ No entitlements available for assignment`);
-      console.log('   → Users will be assigned to app without entitlements');
-      console.log('');
-    }
-
     let created = 0;
     let updated = 0;
     let assigned = 0;
-    let entitlementsAssigned = 0;
     let failed = 0;
 
     for (let i = 0; i < records.length; i++) {
@@ -841,86 +831,21 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
           console.log(`     ✓ User created (${userId})`);
         }
 
-        // Build app user profile with custom attributes
+        // Build app user profile with custom attributes INCLUDING entitlements
         appUserProfile = {};
 
-        // Add all non-ent_* columns as app user attributes
+        // Add ALL columns as app user attributes (including ent_* entitlement columns)
         for (const [key, value] of Object.entries(record)) {
-          if (!key.startsWith('ent_') && value) {
+          if (value) {
             appUserProfile[key] = value;
           }
         }
 
-        // Assign user to app
-        console.log(`     → Assigning user to app...`);
+        // Assign user to app with ALL attributes (including ent_* entitlements)
+        console.log(`     → Assigning user to app with entitlements...`);
         await assignUserToApp(config, appId, userId, appUserProfile);
-        console.log(`     ✓ User assigned to app with attributes`);
+        console.log(`     ✓ User assigned to app with attributes and entitlements`);
         assigned++;
-
-        // Assign entitlements from ent_* columns
-        if (resourceId && Object.keys(entitlementsMap).length > 0) {
-          const userEntitlements = [];
-
-          // Parse ent_* columns for this user
-          for (const [key, value] of Object.entries(record)) {
-            if (key.startsWith('ent_') && value) {
-              const entitlementName = key.substring(4); // Remove 'ent_' prefix
-              const entitlement = entitlementsMap[entitlementName.toLowerCase()];
-
-              if (entitlement && entitlement.id) {
-                // Split comma-separated values
-                const values = value.split(',').map(v => v.trim()).filter(v => v);
-
-                // For each value, find the matching entitlement value ID
-                for (const val of values) {
-                  // Find the value object in the entitlement's values array
-                  if (entitlement.values && Array.isArray(entitlement.values)) {
-                    const entValue = entitlement.values.find(
-                      ev => ev.name && ev.name.toLowerCase() === val.toLowerCase()
-                    );
-
-                    if (entValue && entValue.id) {
-                      userEntitlements.push({
-                        entitlementId: entitlement.id,
-                        valueId: entValue.id
-                      });
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          // Create grants for each entitlement if any were found
-          if (userEntitlements.length > 0) {
-            try {
-              console.log(`     → Creating ${userEntitlements.length} entitlement grant(s)...`);
-              let grantsFailed = 0;
-              let grantsCreated = 0;
-
-              for (const ent of userEntitlements) {
-                try {
-                  await createEntitlementGrant(config, resourceId, userId, ent.entitlementId, ent.valueId);
-                  grantsCreated++;
-                } catch (grantError) {
-                  grantsFailed++;
-                  // Continue with other grants even if one fails
-                }
-              }
-
-              if (grantsCreated > 0) {
-                console.log(`     ✓ ${grantsCreated} entitlement grant(s) created`);
-                entitlementsAssigned++;
-              }
-              if (grantsFailed > 0) {
-                console.log(`     ⚠ ${grantsFailed} grant(s) failed`);
-              }
-            } catch (error) {
-              console.log(`     ⚠ Entitlement assignment failed: ${error.message}`);
-              // Don't fail the whole user - they're still assigned to the app
-            }
-          }
-        }
 
         console.log('');
 
@@ -955,10 +880,7 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
     console.log(`     • Total users in CSV: ${records.length}`);
     console.log(`     • Created: ${created}`);
     console.log(`     • Updated: ${updated}`);
-    console.log(`     • Assigned to app: ${assigned}`);
-    if (entitlementsAssigned > 0) {
-      console.log(`     • Users with entitlements: ${entitlementsAssigned}`);
-    }
+    console.log(`     • Assigned to app with entitlements: ${assigned}`);
     if (failed > 0) {
       console.log(`     • Failed: ${failed}`);
     }
@@ -1415,7 +1337,6 @@ async function processCustomAttributes(config, appId, csvFilePath) {
 
   console.log('   📊 Custom Attribute Summary:');
   console.log(`     • Total columns in CSV: ${allColumns.total}`);
-  console.log(`     • Excluded (ent_*): ${excludedColumns.length}`);
   console.log(`     • Already existed: ${attributesAlreadyExist.length}`);
   console.log(`     • Successfully created: ${successCount}`);
   if (failureCount > 0) {
