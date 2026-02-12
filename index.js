@@ -1994,10 +1994,16 @@ async function syncUsers(config, appId, csvFilePath, resourceId, entitlementsMap
 
     // Ensure all entitlement values from CSV exist (create new ones if needed)
     if (entitlementsMap && Object.keys(entitlementsMap).length > 0) {
+      console.log('   → Checking for new entitlement values...');
       const newValues = await ensureEntitlementValues(config, appId, records, entitlementsMap);
       if (newValues.length > 0) {
-        console.log(`   ✓ Created ${newValues.length} new entitlement value(s)`);
+        console.log(`   ✓ Created ${newValues.length} new entitlement value(s):`);
+        for (const nv of newValues) {
+          console.log(`     • ${nv.entitlement}: "${nv.value}"`);
+        }
         console.log('');
+      } else {
+        console.log('   ✓ All entitlement values already exist');
       }
     }
 
@@ -2235,13 +2241,20 @@ async function syncUsers(config, appId, csvFilePath, resourceId, entitlementsMap
       console.log('');
     }
 
-    console.log('   📊 Sync Summary:');
-    console.log(`     • Added: ${added}`);
-    console.log(`     • Updated: ${updated}`);
-    console.log(`     • Removed: ${removed}`);
+    // Print verbose sync results
+    const syncTime = new Date().toLocaleTimeString();
+    console.log('   ' + '─'.repeat(50));
+    console.log(`   📊 SYNC RESULTS [${syncTime}]`);
+    console.log('   ' + '─'.repeat(50));
+    console.log(`     Users Added:    ${added}`);
+    console.log(`     Users Updated:  ${updated}`);
+    console.log(`     Users Removed:  ${removed}`);
     if (failed > 0) {
-      console.log(`     • Failed: ${failed}`);
+      console.log(`     Failed:         ${failed}`);
     }
+    console.log(`     Total in Okta:  ${oktaAppUsers.length}`);
+    console.log(`     Total in CSV:   ${Object.keys(csvUsers).length}`);
+    console.log('   ' + '─'.repeat(50));
     console.log('');
 
     return { added, updated, removed, failed };
