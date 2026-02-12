@@ -96,6 +96,19 @@ Some governance APIs require SSWS tokens. You can configure both:
 }
 ```
 
+#### Example: With Sync Mode Enabled
+
+```json
+{
+  "oktaDomain": "your-company.okta.com",
+  "clientId": "0oa1234567890abcdef",
+  "clientSecret": "your-client-secret-here",
+  "apiToken": "00abc123XYZ_your-ssws-token-here",
+  "selectedCsvFile": "My Application.csv",
+  "syncInterval": 5
+}
+```
+
 ### Configuration Fields
 
 | Field | Required | Description |
@@ -107,6 +120,7 @@ Some governance APIs require SSWS tokens. You can configure both:
 | `authFlow` | No | Set to `"device"` for interactive browser auth |
 | `apiToken` | No | SSWS API token (legacy, needed for some governance APIs) |
 | `selectedCsvFile` | No | Remembers your CSV file selection |
+| `syncInterval` | No | Enable sync mode - check for changes every N minutes |
 
 *Required unless using SSWS token only (legacy)
 
@@ -267,6 +281,75 @@ Grants are created using the Okta Governance API:
     }
   ]
 }
+```
+
+## Sync Mode
+
+The application supports **continuous sync mode** that periodically monitors the CSV file for changes and automatically synchronizes with Okta.
+
+### Enable Sync Mode
+
+Add `syncInterval` to your `config.json`:
+
+```json
+{
+  "syncInterval": 5
+}
+```
+
+This will check for CSV changes every 5 minutes.
+
+### What Sync Mode Does
+
+| Change Type | Action |
+|-------------|--------|
+| **New user in CSV** | Create user, assign to app, grant entitlements |
+| **User removed from CSV** | Revoke entitlements, unassign from app |
+| **User attributes changed** | Update app user profile |
+| **User entitlements changed** | Revoke old grants, create new grants |
+
+### Sync Output Example
+
+```
+🔁 SYNC MODE ENABLED
+======================================================================
+   Checking for changes every 5 minute(s)
+   Press Ctrl+C to stop
+
+🔄 SYNC: Checking for changes...
+
+   → Fetching current users from Okta...
+   ✓ Found 100 user(s) currently assigned to app
+   ✓ CSV contains 102 user(s)
+
+   📊 Changes detected:
+     • New users to add: 2
+     • Users to update: 100
+     • Users to remove: 0
+
+   ➕ Adding new users from CSV...
+     → Adding newuser@example.com...
+     ✓ newuser@example.com added with entitlements
+
+   🔄 Checking for updates...
+     ✓ No profile updates needed
+
+   📊 Sync Summary:
+     • Added: 2
+     • Updated: 0
+     • Removed: 0
+```
+
+### Running as a Service
+
+For production use, run the connector as a background service:
+
+```bash
+# Using nohup
+nohup npm start > sync.log 2>&1 &
+
+# Or using pm2
+pm2 start index.js --name "okta-sync"
 ```
 
 ## Example Output

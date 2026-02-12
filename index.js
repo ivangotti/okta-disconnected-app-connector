@@ -860,6 +860,163 @@ async function createEntitlementGrant(config, appId, userId, entitlementsArray) 
 }
 
 /**
+ * Get all users assigned to an app
+ */
+async function getAppUsers(config, appId) {
+  try {
+    const allUsers = [];
+    let url = `https://${config.oktaDomain}/api/v1/apps/${appId}/users?limit=200`;
+
+    while (url) {
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': await getAuthHeader(config),
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
+
+      const users = await response.json();
+      allUsers.push(...users);
+
+      // Check for pagination
+      const linkHeader = response.headers.get('link');
+      if (linkHeader && linkHeader.includes('rel="next"')) {
+        const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+        url = match ? match[1] : null;
+      } else {
+        url = null;
+      }
+    }
+
+    return allUsers;
+  } catch (error) {
+    throw error;
+  }
+}
+
+/**
+ * Unassign user from app
+ */
+async function unassignUserFromApp(config, appId, userId) {
+  try {
+    const response = await fetch(
+      `https://${config.oktaDomain}/api/v1/apps/${appId}/users/${userId}`,
+      {
+        method: 'DELETE',
+        headers: {
+          'Authorization': await getAuthHeader(config),
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    if (!response.ok && response.status !== 204) {
+      const errorBody = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorBody}`);
+    }
+
+    return true;
+  } catch (error) {
+    throw error;
+  }
+}
+
+/**
+ * Update app user profile
+ */
+async function updateAppUserProfile(config, appId, userId, profileData) {
+  try {
+    const response = await fetch(
+      `https://${config.oktaDomain}/api/v1/apps/${appId}/users/${userId}`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': await getAuthHeader(config),
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          profile: profileData
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorBody}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    throw error;
+  }
+}
+
+/**
+ * Get user's entitlement grants for an app
+ */
+async function getUserGrants(config, appId, userId) {
+  try {
+    const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
+
+    // Filter grants by user and app
+    const filter = encodeURIComponent(`targetPrincipal.externalId eq "${userId}" and target.externalId eq "${appId}"`);
+    const response = await fetch(
+      `https://${config.oktaDomain}/governance/api/v1/grants?filter=${filter}`,
+      {
+        headers: {
+          'Authorization': authHeader,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    if (!response.ok) {
+      // If filter doesn't work, return empty array
+      return [];
+    }
+
+    const grants = await response.json();
+    return Array.isArray(grants) ? grants : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+/**
+ * Revoke an entitlement grant
+ */
+async function revokeGrant(config, grantId) {
+  try {
+    const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
+
+    const response = await fetch(
+      `https://${config.oktaDomain}/governance/api/v1/grants/${grantId}`,
+      {
+        method: 'DELETE',
+        headers: {
+          'Authorization': authHeader,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    if (!response.ok && response.status !== 204) {
+      const errorBody = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorBody}`);
+    }
+
+    return true;
+  } catch (error) {
+    throw error;
+  }
+}
+
+/**
  * Process users from CSV - create/update users and assign to app
  */
 async function processUsers(config, appId, csvFilePath, resourceId = null, entitlementsMap = {}) {
@@ -1547,6 +1704,338 @@ async function processCustomAttributes(config, appId, csvFilePath) {
   return columns;
 }
 
+/**
+ * Build entitlements array for a user from CSV record
+ */
+function buildUserEntitlements(record, entitlementsMap) {
+  const entitlementsForGrant = {};
+
+  for (const [key, value] of Object.entries(record)) {
+    if (key.startsWith('ent_') && value) {
+      const entitlementName = key.substring(4);
+      const entitlement = entitlementsMap[entitlementName.toLowerCase()];
+
+      if (entitlement && entitlement.id && entitlement.values) {
+        const csvValues = [...new Set(value.split(',').map(v => v.trim()).filter(v => v))];
+
+        for (const val of csvValues) {
+          const entValue = entitlement.values.find(
+            ev => ev.name && ev.name.toLowerCase() === val.toLowerCase()
+          );
+
+          if (entValue && entValue.id) {
+            if (!entitlementsForGrant[entitlement.id]) {
+              entitlementsForGrant[entitlement.id] = {
+                id: entitlement.id,
+                values: []
+              };
+            }
+            const alreadyAdded = entitlementsForGrant[entitlement.id].values.some(
+              v => v.id === entValue.id
+            );
+            if (!alreadyAdded) {
+              entitlementsForGrant[entitlement.id].values.push({
+                id: entValue.id,
+                name: entValue.name || val,
+                description: entValue.description || val,
+                label: entValue.name || val
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return Object.values(entitlementsForGrant);
+}
+
+/**
+ * Sync users from CSV with Okta - handles adds, updates, and deletes
+ */
+async function syncUsers(config, appId, csvFilePath, resourceId, entitlementsMap) {
+  console.log('🔄 SYNC: Checking for changes...');
+  console.log('');
+
+  try {
+    // Read CSV to get expected state
+    const fileContent = fs.readFileSync(csvFilePath, 'utf8');
+    const records = parse(fileContent, {
+      columns: true,
+      skip_empty_lines: true,
+      trim: true
+    });
+
+    // Build map of expected users from CSV (keyed by username)
+    const csvUsers = {};
+    const usernameKeys = ['username', 'login', 'email', 'user', 'userid', 'user_id', 'mail'];
+
+    for (const record of records) {
+      let username = null;
+      for (const key of usernameKeys) {
+        const matchingCol = Object.keys(record).find(col => col.toLowerCase() === key);
+        if (matchingCol && record[matchingCol]) {
+          username = record[matchingCol];
+          break;
+        }
+      }
+      if (username) {
+        csvUsers[username.toLowerCase()] = record;
+      }
+    }
+
+    // Get current Okta state
+    console.log('   → Fetching current users from Okta...');
+    const oktaAppUsers = await getAppUsers(config, appId);
+    console.log(`   ✓ Found ${oktaAppUsers.length} user(s) currently assigned to app`);
+    console.log(`   ✓ CSV contains ${Object.keys(csvUsers).length} user(s)`);
+    console.log('');
+
+    // Build map of Okta users (keyed by login/email)
+    const oktaUsers = {};
+    for (const appUser of oktaAppUsers) {
+      const login = appUser.credentials?.userName || appUser.profile?.email;
+      if (login) {
+        oktaUsers[login.toLowerCase()] = appUser;
+      }
+    }
+
+    // Identify changes
+    const toAdd = [];
+    const toUpdate = [];
+    const toRemove = [];
+
+    // Check for new users (in CSV but not in Okta)
+    for (const [username, record] of Object.entries(csvUsers)) {
+      if (!oktaUsers[username]) {
+        toAdd.push({ username, record });
+      } else {
+        // Check if user needs update (compare profiles)
+        toUpdate.push({ username, record, oktaUser: oktaUsers[username] });
+      }
+    }
+
+    // Check for removed users (in Okta but not in CSV)
+    for (const [username, oktaUser] of Object.entries(oktaUsers)) {
+      if (!csvUsers[username]) {
+        toRemove.push({ username, oktaUser });
+      }
+    }
+
+    console.log('   📊 Changes detected:');
+    console.log(`     • New users to add: ${toAdd.length}`);
+    console.log(`     • Users to update: ${toUpdate.length}`);
+    console.log(`     • Users to remove: ${toRemove.length}`);
+    console.log('');
+
+    let added = 0, updated = 0, removed = 0, failed = 0;
+
+    // Process removals first
+    if (toRemove.length > 0) {
+      console.log('   🗑️  Removing users no longer in CSV...');
+      for (const { username, oktaUser } of toRemove) {
+        try {
+          console.log(`     → Removing ${username}...`);
+
+          // Revoke grants first
+          const grants = await getUserGrants(config, appId, oktaUser.id);
+          for (const grant of grants) {
+            try {
+              await revokeGrant(config, grant.id);
+            } catch (e) {
+              // Continue even if grant revocation fails
+            }
+          }
+
+          // Unassign from app
+          await unassignUserFromApp(config, appId, oktaUser.id);
+          console.log(`     ✓ ${username} removed`);
+          removed++;
+        } catch (error) {
+          console.log(`     ✗ Failed to remove ${username}: ${error.message}`);
+          failed++;
+        }
+      }
+      console.log('');
+    }
+
+    // Process additions
+    if (toAdd.length > 0) {
+      console.log('   ➕ Adding new users from CSV...');
+      for (const { username, record } of toAdd) {
+        try {
+          console.log(`     → Adding ${username}...`);
+
+          // Build user profile
+          const userProfile = { login: username, email: username };
+          for (const [csvColumn, value] of Object.entries(record)) {
+            if (!value || csvColumn.startsWith('ent_')) continue;
+            const oktaAttribute = findMatchingOktaAttribute(csvColumn);
+            if (oktaAttribute) {
+              userProfile[oktaAttribute] = value;
+            }
+          }
+          if (!userProfile.firstName) userProfile.firstName = '';
+          if (!userProfile.lastName) userProfile.lastName = '';
+
+          // Find or create user
+          let user = await findUser(config, username);
+          if (!user) {
+            const randomPassword = generateSecurePassword();
+            user = await createUser(config, {
+              profile: userProfile,
+              credentials: { password: { value: randomPassword } }
+            });
+          }
+
+          // Build app user profile
+          const appUserProfile = {};
+          for (const [key, value] of Object.entries(record)) {
+            if (value) appUserProfile[key] = value;
+          }
+
+          // Assign to app
+          await assignUserToApp(config, appId, user.id, appUserProfile);
+
+          // Create entitlement grants
+          if (resourceId && Object.keys(entitlementsMap).length > 0) {
+            const entitlementsArray = buildUserEntitlements(record, entitlementsMap);
+            if (entitlementsArray.length > 0) {
+              await createEntitlementGrant(config, appId, user.id, entitlementsArray);
+            }
+          }
+
+          console.log(`     ✓ ${username} added with entitlements`);
+          added++;
+        } catch (error) {
+          console.log(`     ✗ Failed to add ${username}: ${error.message}`);
+          failed++;
+        }
+      }
+      console.log('');
+    }
+
+    // Process updates (check for attribute/entitlement changes)
+    if (toUpdate.length > 0) {
+      console.log('   🔄 Checking for updates...');
+      let updatesNeeded = 0;
+
+      for (const { username, record, oktaUser } of toUpdate) {
+        try {
+          // Build expected app profile
+          const expectedProfile = {};
+          for (const [key, value] of Object.entries(record)) {
+            if (value) expectedProfile[key] = value;
+          }
+
+          // Compare with current profile
+          const currentProfile = oktaUser.profile || {};
+          let profileChanged = false;
+
+          for (const [key, value] of Object.entries(expectedProfile)) {
+            if (currentProfile[key] !== value) {
+              profileChanged = true;
+              break;
+            }
+          }
+
+          if (profileChanged) {
+            console.log(`     → Updating ${username} profile...`);
+            await updateAppUserProfile(config, appId, oktaUser.id, expectedProfile);
+            console.log(`     ✓ ${username} profile updated`);
+            updatesNeeded++;
+            updated++;
+          }
+
+          // Check entitlements - revoke existing and create new
+          if (resourceId && Object.keys(entitlementsMap).length > 0) {
+            const expectedEntitlements = buildUserEntitlements(record, entitlementsMap);
+            const currentGrants = await getUserGrants(config, appId, oktaUser.id);
+
+            // Simple approach: if we have grants to create, revoke old ones and create new
+            if (expectedEntitlements.length > 0 || currentGrants.length > 0) {
+              // Revoke existing grants
+              for (const grant of currentGrants) {
+                try {
+                  await revokeGrant(config, grant.id);
+                } catch (e) {
+                  // Continue
+                }
+              }
+
+              // Create new grants
+              if (expectedEntitlements.length > 0) {
+                await createEntitlementGrant(config, appId, oktaUser.id, expectedEntitlements);
+              }
+            }
+          }
+        } catch (error) {
+          console.log(`     ✗ Failed to update ${username}: ${error.message}`);
+          failed++;
+        }
+      }
+
+      if (updatesNeeded === 0) {
+        console.log('     ✓ No profile updates needed');
+      }
+      console.log('');
+    }
+
+    console.log('   📊 Sync Summary:');
+    console.log(`     • Added: ${added}`);
+    console.log(`     • Updated: ${updated}`);
+    console.log(`     • Removed: ${removed}`);
+    if (failed > 0) {
+      console.log(`     • Failed: ${failed}`);
+    }
+    console.log('');
+
+    return { added, updated, removed, failed };
+  } catch (error) {
+    console.log(`   ✗ Sync error: ${error.message}`);
+    console.log('');
+    return { added: 0, updated: 0, removed: 0, failed: 1 };
+  }
+}
+
+/**
+ * Run in sync mode - periodically check for changes
+ */
+async function runSyncMode(config, app, csvFilePath, resourceId, entitlementsMap) {
+  const intervalMinutes = config.syncInterval || 5;
+  const intervalMs = intervalMinutes * 60 * 1000;
+
+  console.log('');
+  console.log('='.repeat(70));
+  console.log('🔁 SYNC MODE ENABLED');
+  console.log('='.repeat(70));
+  console.log(`   Checking for changes every ${intervalMinutes} minute(s)`);
+  console.log('   Press Ctrl+C to stop');
+  console.log('');
+
+  // Run initial sync
+  await syncUsers(config, app.id, csvFilePath, resourceId, entitlementsMap);
+
+  // Schedule periodic syncs
+  const syncLoop = async () => {
+    const now = new Date().toLocaleTimeString();
+    console.log(`⏰ [${now}] Running scheduled sync...`);
+    console.log('');
+    await syncUsers(config, app.id, csvFilePath, resourceId, entitlementsMap);
+    console.log(`   Next sync in ${intervalMinutes} minute(s)`);
+    console.log('');
+  };
+
+  setInterval(syncLoop, intervalMs);
+
+  // Keep process running
+  process.on('SIGINT', () => {
+    console.log('');
+    console.log('👋 Sync mode stopped');
+    process.exit(0);
+  });
+}
+
 async function main() {
   try {
     console.log('='.repeat(70));
@@ -1711,19 +2200,26 @@ async function main() {
 
     console.log('');
     console.log('='.repeat(70));
-    console.log('✅ Processing Complete!');
+    console.log('✅ Initial Processing Complete!');
     console.log('='.repeat(70));
     console.log('');
-    console.log('📍 Next Steps:');
-    console.log('   1. Login to Okta Admin Console');
-    console.log(`   2. Navigate to Applications → ${appName}`);
-    console.log('   3. Configure SAML settings (SSO URLs, Audience, etc.)');
-    console.log('   4. Review users assigned to the app under Assignments tab');
-    console.log('   5. Review custom attributes under Provisioning → To App');
-    console.log('   6. Verify profile mappings under Provisioning → To Okta');
-    console.log('   7. Check entitlements under Identity Governance → Resources');
-    console.log('   8. Verify user entitlement assignments if governance is enabled');
-    console.log('');
+
+    // Check if sync mode is enabled
+    if (config.syncInterval && config.syncInterval > 0) {
+      // Enter sync mode - will run indefinitely
+      await runSyncMode(config, app, selectedCsvFile, governanceResourceId, entitlementsMap);
+    } else {
+      // One-time run - show next steps and exit
+      console.log('📍 Next Steps:');
+      console.log('   1. Login to Okta Admin Console');
+      console.log(`   2. Navigate to Applications → ${appName}`);
+      console.log('   3. Review users assigned to the app under Assignments tab');
+      console.log('   4. Check entitlements under Identity Governance → Resources');
+      console.log('');
+      console.log('💡 TIP: To enable automatic sync mode, add "syncInterval": 5 to config.json');
+      console.log('   This will check for CSV changes every 5 minutes.');
+      console.log('');
+    }
 
   } catch (error) {
     console.log('');
