@@ -1550,7 +1550,7 @@ async function processCustomAttributes(config, appId, csvFilePath) {
 async function main() {
   try {
     console.log('='.repeat(70));
-    console.log('  CSV Agent - Okta SAML Application Automation');
+    console.log('  Okta Disconnected App Governance Connector');
     console.log('='.repeat(70));
     console.log('');
 

@@ -1,7 +1,7 @@
 {
-  "name": "csv-agent",
+  "name": "okta-disconnected-app-governance-connector",
   "version": "1.0.0",
-  "description": "Node.js application to automate SAML 2.0 application creation and custom attribute management in Okta based on CSV files",
+  "description": "Automates Disconnected Application creation for Okta Identity Governance with entitlement management, access requests, reviews, and SoD policies",
   "main": "index.js",
   "type": "module",
   "scripts": {

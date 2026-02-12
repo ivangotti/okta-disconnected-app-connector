@@ -1,4 +1,4 @@
-# CSV Agent - Okta Identity Governance Automation
+# Okta Disconnected App Governance Connector
 
 A Node.js application that automates **Disconnected Application** creation for **Okta Identity Governance (OIG)**, enabling full governance capabilities for applications that don't have direct Okta integration.
 
@@ -273,7 +273,7 @@ Grants are created using the Okta Governance API:
 
 ```
 ======================================================================
-  CSV Agent - Okta Identity Governance Automation
+  Okta Disconnected App Governance Connector
 ======================================================================
 
 📋 STEP 1: Loading Configuration
