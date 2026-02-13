@@ -13,7 +13,7 @@ Disconnected applications in Okta Identity Governance allow you to:
 
 **Note**: The application does NOT need to have authentication (SAML/OIDC) configured. The app serves as a governance container for managing entitlements and access - actual authentication to the target system is handled separately.
 
-## Features
+## Connector Features
 
 ### Core Capabilities
 - **Disconnected App Creation**: Automatically creates governance-enabled applications from CSV filenames
