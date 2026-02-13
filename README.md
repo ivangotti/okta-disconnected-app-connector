@@ -2,6 +2,8 @@
 
 A modern governance connector that brings any application under **Okta Identity Governance (OIG)** control—no native integration required. Simply provide a CSV file and let the connector automatically create disconnected apps, provision users, manage entitlements, and keep everything in sync.
 
+> ⚠️ **Experimental Project**: This connector is provided as-is for demonstration and testing purposes. Use at your own risk. Always test in a non-production environment first.
+
 ## Why Disconnected Apps?
 
 Disconnected applications in Okta Identity Governance allow you to:
