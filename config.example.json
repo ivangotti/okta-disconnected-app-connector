@@ -6,5 +6,11 @@
   "privateKeyPath": "./private-key.pem",
   "apiToken": "00abc123XYZ_your-ssws-token-here",
   "selectedCsvFile": "My Application.csv",
-  "syncInterval": 5
+  "syncInterval": 5,
+  "roleMining": {
+    "enabled": true,
+    "minUserThreshold": 2,
+    "createBundles": true,
+    "syncMode": "initial"
+  }
 }

@@ -528,5 +528,21 @@ export async function getConfig() {
     }
   }
 
+  // Set role mining defaults if not specified
+  if (!config.roleMining) {
+    config.roleMining = {
+      enabled: true,
+      minUserThreshold: 2,
+      createBundles: true,
+      syncMode: 'initial'
+    };
+  } else {
+    // Fill in missing defaults
+    if (config.roleMining.enabled === undefined) config.roleMining.enabled = true;
+    if (config.roleMining.minUserThreshold === undefined) config.roleMining.minUserThreshold = 2;
+    if (config.roleMining.createBundles === undefined) config.roleMining.createBundles = true;
+    if (config.roleMining.syncMode === undefined) config.roleMining.syncMode = 'initial';
+  }
+
   return config;
 }

@@ -314,7 +314,7 @@ async function registerGovernanceResource(config, appId, appName) {
     const optInUrl = `https://${config.oktaDomain}/api/v1/governance/resources/source/${appId}/optIn`;
     console.log(`   → API Call: POST ${optInUrl}`);
 
-    // Use SSWS token for governance opt-in endpoint (testing)
+    // Use SSWS token for governance opt-in endpoint if available (governance API preference)
     const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
     console.log(`   → Using ${config.apiToken ? 'SSWS' : 'OAuth'} authentication`);
 
@@ -2260,6 +2260,17 @@ async function syncUsers(config, appId, csvFilePath, resourceId, entitlementsMap
     console.log('   ' + '─'.repeat(50));
     console.log('');
 
+    // Role Mining in sync mode (if enabled)
+    if (config.roleMining?.syncMode === 'every') {
+      console.log('   → Running role mining analysis...');
+      try {
+        const { runRoleMining } = await import('./roleMining.js');
+        await runRoleMining(config, appId, resourceId, entitlementsMap, csvFilePath);
+      } catch (error) {
+        console.log(`   ⚠ Role mining error: ${error.message}`);
+      }
+    }
+
     return { added, updated, removed, failed, entitlementsCreated };
   } catch (error) {
     console.log(`   ✗ Sync error: ${error.message}`);
@@ -2479,6 +2490,18 @@ async function main() {
 
     // Process users from CSV - create/update and assign to app with entitlements
     await processUsers(config, app.id, selectedCsvFile, governanceResourceId, entitlementsMap);
+
+    // STEP 9: Role Mining & Bundle Creation
+    if (config.roleMining?.enabled !== false) {
+      try {
+        const { runRoleMining } = await import('./roleMining.js');
+        await runRoleMining(config, app.id, governanceResourceId, entitlementsMap, selectedCsvFile);
+      } catch (error) {
+        console.log('');
+        console.log('⚠ Role mining encountered an error but continuing:');
+        console.log(`   ${error.message}`);
+      }
+    }
 
     console.log('');
     console.log('='.repeat(70));
