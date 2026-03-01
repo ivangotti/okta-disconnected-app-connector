@@ -56,108 +56,116 @@ npm run dev
 
 ## Configuration
 
-On first run, the application prompts for Okta credentials and saves them to `config.json`.
+### Quick Start
 
-### Configuration File (`config.json`)
-
-The configuration file stores your Okta connection settings. It is automatically created on first run, or you can create it manually.
-
-#### Example: OAuth with Client Credentials (Recommended)
+Copy `config.example.json` to `config.json` and configure your credentials:
 
 ```json
 {
   "oktaDomain": "your-company.okta.com",
   "clientId": "0oa1234567890abcdef",
   "clientSecret": "your-client-secret-here",
-  "selectedCsvFile": "My Application.csv"
+  "apiToken": "00abc123XYZ_your-ssws-token-here"
 }
 ```
 
-#### Example: OAuth with Private Key JWT
+> **⚠️ Authentication Requirement**: This connector requires **BOTH OAuth and SSWS tokens** because different Okta APIs have different authentication requirements (see details below).
+
+### Required Credentials
+
+| Credential | Required | Used For | How to Get |
+|------------|----------|----------|------------|
+| **OAuth Token** | ✅ Yes | Core APIs (apps, users, schemas) | Create OAuth 2.0 app in Okta Admin |
+| **SSWS Token** | ✅ Yes | Governance APIs (entitlements, grants, bundles) | Generate API token in Okta Admin |
+
+### Setup Steps
+
+#### 1. Create OAuth Application (Required)
+
+1. Login to **Okta Admin Console** → **Applications** → **Applications**
+2. Click **Create App Integration**
+3. Select **API Services** → Click **Next**
+4. Name it "CSV Connector" → Click **Save**
+5. Copy the **Client ID** and **Client Secret**
+6. Go to **Okta API Scopes** tab and grant:
+   ```
+   okta.apps.manage, okta.apps.read
+   okta.users.manage, okta.users.read
+   okta.schemas.manage, okta.schemas.read
+   okta.profileMappings.manage, okta.profileMappings.read
+   okta.governance.accessCertifications.manage
+   okta.governance.accessRequests.manage
+   ```
+
+#### 2. Generate SSWS API Token (Required)
+
+1. Login to **Okta Admin Console** → **Security** → **API**
+2. Click **Tokens** tab → **Create Token**
+3. Name it "CSV Connector Governance" → **Create Token**
+4. **Copy the token immediately** (shown only once)
+
+#### 3. Create Configuration File
+
+Create `config.json`:
+
+```json
+{
+  "oktaDomain": "your-company.okta.com",
+  "clientId": "0oa1234567890abcdef",
+  "clientSecret": "your-client-secret-here",
+  "apiToken": "00abc123XYZ_your-ssws-token-here"
+}
+```
+
+> **Note**: The `config.json` file is gitignored to protect your credentials.
+
+### Configuration Options
+
+#### Basic Configuration
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `oktaDomain` | ✅ Yes | Your Okta tenant domain (e.g., `company.okta.com`) |
+| `clientId` | ✅ Yes | OAuth application Client ID |
+| `clientSecret` | ✅ Yes* | OAuth client secret |
+| `apiToken` | ✅ Yes | SSWS API token |
+| `selectedCsvFile` | No | Remembers CSV file selection |
+
+*Can use `privateKeyPath` instead for private key JWT authentication
+
+#### Optional Features
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `syncInterval` | Sync interval in minutes | `5` = every 5 minutes |
+| `roleMining` | Role mining configuration | See Role Mining section |
+
+#### Private Key JWT (Alternative to Client Secret)
+
+For enhanced security, use private key JWT instead of client secret:
 
 ```json
 {
   "oktaDomain": "your-company.okta.com",
   "clientId": "0oa1234567890abcdef",
   "privateKeyPath": "./private-key.pem",
-  "selectedCsvFile": "My Application.csv"
+  "apiToken": "00abc123XYZ_your-ssws-token-here"
 }
 ```
 
-#### Example: Device Flow (Interactive)
+### Why Both OAuth AND SSWS?
 
-```json
-{
-  "oktaDomain": "your-company.okta.com",
-  "authFlow": "device",
-  "clientId": "0oa1234567890abcdef",
-  "selectedCsvFile": "My Application.csv"
-}
-```
+Based on comprehensive API testing, different Okta endpoints require different authentication:
 
-#### Example: SSWS Token + OAuth (Hybrid)
+| API Type | OAuth | SSWS | Used For |
+|----------|-------|------|----------|
+| **Core Management** | ✅ | ✅ | Apps, users, schemas, mappings |
+| **Governance OptIn** | ❌ 403 | ✅ | Registering apps for governance |
+| **Governance Entitlements** | ❌ 403 | ✅ | Creating entitlements |
+| **Governance Grants** | ❌ 403 | ✅ | Assigning entitlements to users |
+| **Governance Bundles** | ❌ 403 | ✅ | Creating role bundles |
 
-Some governance APIs require SSWS tokens. You can configure both:
-
-```json
-{
-  "oktaDomain": "your-company.okta.com",
-  "clientId": "0oa1234567890abcdef",
-  "clientSecret": "your-client-secret-here",
-  "apiToken": "00abc123XYZ_your-ssws-token-here",
-  "selectedCsvFile": "My Application.csv"
-}
-```
-
-#### Example: With Sync Mode Enabled
-
-```json
-{
-  "oktaDomain": "your-company.okta.com",
-  "clientId": "0oa1234567890abcdef",
-  "clientSecret": "your-client-secret-here",
-  "apiToken": "00abc123XYZ_your-ssws-token-here",
-  "selectedCsvFile": "My Application.csv",
-  "syncInterval": 5
-}
-```
-
-### Configuration Fields
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `oktaDomain` | Yes | Your Okta tenant domain (e.g., `company.okta.com`) |
-| `clientId` | Yes* | OAuth application Client ID |
-| `clientSecret` | No | OAuth client secret (for client_credentials flow) |
-| `privateKeyPath` | No | Path to private key PEM file (for private_key_jwt) |
-| `authFlow` | No | Set to `"device"` for interactive browser auth, or `"client_credentials"` (default) |
-| `apiToken` | No | SSWS API token (needed for some governance APIs) |
-| `selectedCsvFile` | No | Remembers your CSV file selection between runs |
-| `syncInterval` | No | Enable scheduled sync mode - interval in **minutes** (e.g., `5` = every 5 minutes) |
-
-*Required unless using SSWS token only (legacy)
-
-> **Note**: Copy `config.example.json` to `config.json` and fill in your values. The `config.json` file is gitignored to protect your credentials.
-
-### Authentication Options
-
-1. **Client Credentials** (Recommended for automation): Use `clientId` + `clientSecret`
-2. **Private Key JWT** (Most secure): Use `clientId` + `privateKeyPath`
-3. **Device Flow** (Interactive): Use `clientId` + `authFlow: "device"` - authenticates in browser
-4. **SSWS Token** (Legacy): Use `apiToken` only - some governance APIs still require this
-
-### Required OAuth Scopes
-
-Grant these scopes to your OAuth application in Okta Admin Console:
-
-```
-okta.apps.manage, okta.apps.read
-okta.users.manage, okta.users.read
-okta.schemas.manage, okta.schemas.read
-okta.profileMappings.manage, okta.profileMappings.read
-okta.governance.accessCertifications.manage
-okta.governance.accessRequests.manage
-```
+**Recommendation**: Configure both OAuth and SSWS tokens. The connector automatically uses the correct authentication method for each API.
 
 ## CSV File Structure
 
@@ -203,7 +211,7 @@ CSV columns are automatically mapped to Okta fields:
 
 ## Processing Flow
 
-The application executes an 8-step workflow:
+The application executes a 9-step automated workflow:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -230,6 +238,9 @@ The application executes an 8-step workflow:
 ├─────────────────────────────────────────────────────────────────────┤
 │  STEP 8: User Provisioning                                          │
 │  → Creates/updates users, assigns to app, grants entitlements       │
+├─────────────────────────────────────────────────────────────────────┤
+│  STEP 9: Role Mining & Bundle Creation                              │
+│  → Discovers role patterns, creates entitlement bundles             │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -297,6 +308,98 @@ Grants are created using the Okta Governance API:
   ]
 }
 ```
+
+## Role Mining & Bundle Creation
+
+The connector includes **automated role discovery** that analyzes CSV entitlement patterns and creates **Okta Governance bundles** for common permission combinations.
+
+### How It Works
+
+After provisioning users (Step 8), the connector automatically:
+
+1. **Analyzes CSV Data**: Reads all user entitlement assignments from the CSV
+2. **Discovers Patterns**: Groups users with identical permission combinations (exact match clustering)
+3. **Generates Role Candidates**: Creates role definitions for groups meeting the minimum threshold
+4. **Creates Bundles**: Automatically creates Okta Governance bundles via API
+5. **Reports Statistics**: Shows coverage metrics and bundle details
+
+### Example Output
+
+```
+🎯 STEP 9: Role Mining & Bundle Creation
+══════════════════════════════════════════════════════════════════════
+📄 Reading user entitlement data from CSV...
+✓ Loaded 100 user records from CSV
+✓ Found 100 users with entitlements
+
+🔍 Analyzing role patterns...
+✓ Found 15 unique permission combinations
+✓ Discovered 5 role candidates
+
+📊 Discovered Role Candidates:
+1. Finance_Analyst_ViewRead - 25 users (25.0% coverage)
+2. Finance_Manager_ApproveSubmit - 18 users (18.0% coverage)
+3. HR_Recruiter_PostInterview - 15 users (15.0% coverage)
+4. IT_Admin_ConfigureDeploy - 12 users (12.0% coverage)
+5. Sales_Rep_View - 10 users (10.0% coverage)
+
+🏗️ Creating Bundles in Okta Governance
+✓ Created: Finance_Analyst_ViewRead
+✓ Created: Finance_Manager_ApproveSubmit
+✓ Created: HR_Recruiter_PostInterview
+✓ Created: IT_Admin_ConfigureDeploy
+✓ Created: Sales_Rep_View
+
+✅ Role Mining Complete!
+   Bundles Created: 5
+   Users Covered: 80 (80.0%)
+```
+
+### Configuration
+
+Add `roleMining` section to your `config.json`:
+
+```json
+{
+  "oktaDomain": "your-company.okta.com",
+  "clientId": "0oa1234567890abcdef",
+  "clientSecret": "your-client-secret-here",
+  "apiToken": "00abc123XYZ_your-ssws-token-here",
+  "roleMining": {
+    "enabled": true,
+    "minUserThreshold": 2,
+    "createBundles": true,
+    "syncMode": "initial"
+  }
+}
+```
+
+### Configuration Options
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Enable/disable role mining feature |
+| `minUserThreshold` | `2` | Minimum users required to create a bundle |
+| `createBundles` | `true` | If `false`, only reports roles without creating bundles |
+| `syncMode` | `"initial"` | When to run: `"initial"` (first run only), `"every"` (all syncs), `"manual"` (disabled) |
+
+### Use Cases
+
+**High Coverage Scenarios** (70%+ users in roles):
+- Organizations with standardized job functions
+- Departments with common permission patterns
+- Applications with role-based access models
+
+**Low Coverage Scenarios** (individualized access):
+- Applications with user-specific permissions
+- Highly customized access patterns
+- Consider setting `minUserThreshold: 1` or disabling
+
+### Viewing Created Bundles
+
+1. **Okta Admin Console**: Identity Governance → Bundles
+2. **API**: `GET /governance/api/v1/entitlement-bundles`
+3. **Verification Script**: Run `node verify-bundles.js`
 
 ## Scheduled Sync Mode
 
