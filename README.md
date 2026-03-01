@@ -56,9 +56,36 @@ npm run dev
 
 ## Configuration
 
-### Quick Start
+### 3-Minute Setup
 
-Copy `config.example.json` to `config.json` and configure your credentials:
+This connector requires two types of credentials from Okta. Follow these steps:
+
+#### Step 1: Create OAuth Application (2 minutes)
+
+1. **Okta Admin Console** → **Applications** → **Create App Integration**
+2. Select **API Services** → Name it "CSV Connector" → **Save**
+3. Copy the **Client ID** and **Client Secret**
+4. Go to **Okta API Scopes** tab → Grant all scopes below → **Save**
+
+**Required Scopes:**
+```
+okta.apps.manage, okta.apps.read
+okta.users.manage, okta.users.read
+okta.schemas.manage, okta.schemas.read
+okta.profileMappings.manage, okta.profileMappings.read
+okta.governance.accessCertifications.manage
+okta.governance.accessRequests.manage
+```
+
+#### Step 2: Generate SSWS API Token (1 minute)
+
+1. **Okta Admin Console** → **Security** → **API** → **Tokens**
+2. **Create Token** → Name it "CSV Connector" → **Create**
+3. **Copy the token immediately** (shown only once)
+
+#### Step 3: Create Configuration File
+
+Create `config.json` in the project directory:
 
 ```json
 {
@@ -69,81 +96,38 @@ Copy `config.example.json` to `config.json` and configure your credentials:
 }
 ```
 
-> **⚠️ Authentication Requirement**: This connector requires **BOTH OAuth and SSWS tokens** because different Okta APIs have different authentication requirements (see details below).
+**Done!** Run `npm start` and the connector will automatically process your CSV files.
 
-### Required Credentials
+---
 
-| Credential | Required | Used For | How to Get |
-|------------|----------|----------|------------|
-| **OAuth Token** | ✅ Yes | Core APIs (apps, users, schemas) | Create OAuth 2.0 app in Okta Admin |
-| **SSWS Token** | ✅ Yes | Governance APIs (entitlements, grants, bundles) | Generate API token in Okta Admin |
+### Why Both OAuth AND SSWS?
 
-### Setup Steps
+Different Okta API families require different authentication:
 
-#### 1. Create OAuth Application (Required)
+| API Type | OAuth | SSWS |
+|----------|-------|------|
+| Core APIs (apps, users, schemas) | ✅ | ✅ |
+| Governance APIs (entitlements, grants, bundles) | ❌ | ✅ |
 
-1. Login to **Okta Admin Console** → **Applications** → **Applications**
-2. Click **Create App Integration**
-3. Select **API Services** → Click **Next**
-4. Name it "CSV Connector" → Click **Save**
-5. Copy the **Client ID** and **Client Secret**
-6. Go to **Okta API Scopes** tab and grant:
-   ```
-   okta.apps.manage, okta.apps.read
-   okta.users.manage, okta.users.read
-   okta.schemas.manage, okta.schemas.read
-   okta.profileMappings.manage, okta.profileMappings.read
-   okta.governance.accessCertifications.manage
-   okta.governance.accessRequests.manage
-   ```
+**The connector automatically uses the correct authentication method for each API.**
 
-#### 2. Generate SSWS API Token (Required)
+---
 
-1. Login to **Okta Admin Console** → **Security** → **API**
-2. Click **Tokens** tab → **Create Token**
-3. Name it "CSV Connector Governance" → **Create Token**
-4. **Copy the token immediately** (shown only once)
+### Advanced: Private Key JWT (Optional)
 
-#### 3. Create Configuration File
+For enhanced security, you can use private key authentication instead of client secret:
 
-Create `config.json`:
-
-```json
-{
-  "oktaDomain": "your-company.okta.com",
-  "clientId": "0oa1234567890abcdef",
-  "clientSecret": "your-client-secret-here",
-  "apiToken": "00abc123XYZ_your-ssws-token-here"
-}
+**Step 1:** Generate an RSA key pair (if you don't have one):
+```bash
+node generate-keys.js
 ```
+This creates `private-key.pem` and `public-key.pem`.
 
-> **Note**: The `config.json` file is gitignored to protect your credentials.
+**Step 2:** Upload public key to your OAuth app in Okta Admin Console:
+- Applications → Your App → General Settings → Client Credentials
+- Click "Edit" → Add "Public Key" → Paste contents of `public-key.pem`
 
-### Configuration Options
-
-#### Basic Configuration
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `oktaDomain` | ✅ Yes | Your Okta tenant domain (e.g., `company.okta.com`) |
-| `clientId` | ✅ Yes | OAuth application Client ID |
-| `clientSecret` | ✅ Yes* | OAuth client secret |
-| `apiToken` | ✅ Yes | SSWS API token |
-| `selectedCsvFile` | No | Remembers CSV file selection |
-
-*Can use `privateKeyPath` instead for private key JWT authentication
-
-#### Optional Features
-
-| Field | Description | Example |
-|-------|-------------|---------|
-| `syncInterval` | Sync interval in minutes | `5` = every 5 minutes |
-| `roleMining` | Role mining configuration | See Role Mining section |
-
-#### Private Key JWT (Alternative to Client Secret)
-
-For enhanced security, use private key JWT instead of client secret:
-
+**Step 3:** Update `config.json`:
 ```json
 {
   "oktaDomain": "your-company.okta.com",
@@ -153,19 +137,49 @@ For enhanced security, use private key JWT instead of client secret:
 }
 ```
 
-### Why Both OAuth AND SSWS?
+> **Note**: JWKS/JWK format is NOT required. The app uses standard PEM format keys.
 
-Based on comprehensive API testing, different Okta endpoints require different authentication:
+---
 
-| API Type | OAuth | SSWS | Used For |
-|----------|-------|------|----------|
-| **Core Management** | ✅ | ✅ | Apps, users, schemas, mappings |
-| **Governance OptIn** | ❌ 403 | ✅ | Registering apps for governance |
-| **Governance Entitlements** | ❌ 403 | ✅ | Creating entitlements |
-| **Governance Grants** | ❌ 403 | ✅ | Assigning entitlements to users |
-| **Governance Bundles** | ❌ 403 | ✅ | Creating role bundles |
+### Configuration Reference
 
-**Recommendation**: Configure both OAuth and SSWS tokens. The connector automatically uses the correct authentication method for each API.
+#### Required Fields
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `oktaDomain` | Your Okta tenant domain | `"company.okta.com"` |
+| `clientId` | OAuth Client ID | `"0oa1234567890abcdef"` |
+| `clientSecret` | OAuth Client Secret (or use `privateKeyPath`) | `"abc123..."` |
+| `apiToken` | SSWS API Token | `"00abc123XYZ..."` |
+
+#### Optional Fields
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `privateKeyPath` | Path to PEM private key (instead of clientSecret) | `"./private-key.pem"` |
+| `selectedCsvFile` | Pre-select CSV file (skip prompt) | `"MyApp.csv"` |
+| `syncInterval` | Enable sync mode (minutes) | `5` |
+| `roleMining` | Role mining configuration | See below |
+
+#### Role Mining Configuration
+
+```json
+{
+  "roleMining": {
+    "enabled": true,
+    "minUserThreshold": 2,
+    "createBundles": true,
+    "syncMode": "initial"
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Enable/disable role mining |
+| `minUserThreshold` | `2` | Minimum users required per role |
+| `createBundles` | `true` | Create bundles in Okta (`false` = report only) |
+| `syncMode` | `"initial"` | When to run: `"initial"`, `"every"`, or `"manual"` |
 
 ## CSV File Structure
 
