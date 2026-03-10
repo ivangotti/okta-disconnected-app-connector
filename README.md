@@ -2,6 +2,18 @@
 
 A modern governance connector that brings any application under **Okta Identity Governance (OIG)** control—no native integration required. Simply provide a CSV file and let the connector automatically create disconnected apps, provision users, manage entitlements, and keep everything in sync.
 
+### What It Does
+
+- **Creates the disconnected app** in Okta from your CSV filename
+- **Creates custom attributes** dynamically from any CSV column structure
+- **Maps attributes** automatically to Okta user profile fields (50+ variations supported)
+- **Enables governance** by registering the app with Okta Identity Governance
+- **Imports users** with full profile data and app assignment
+- **Creates entitlements catalog** from `ent_*` columns with all values
+- **Performs role mining** to discover common permission patterns
+- **Creates bundles** automatically for discovered roles
+- **Monitors CSV for changes** continuously in sync mode
+
 > ⚠️ **Experimental Project**: This connector is provided as-is for demonstration and testing purposes. Use at your own risk. Always test in a non-production environment first.
 
 ## Why Disconnected Apps?
