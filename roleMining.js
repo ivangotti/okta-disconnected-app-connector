@@ -1,4 +1,4 @@
-import { getConfig, getAccessToken, getAccessTokenDeviceFlow } from './config.js';
+import { getConfig, getAccessToken } from './config.js';
 import fs from 'fs';
 import { parse } from 'csv-parse/sync';
 
@@ -49,23 +49,23 @@ function isTokenExpired() {
 
 /**
  * Get authorization header for API calls
+ * Supports SSWS API token (preferred) and OAuth client credentials
  */
 async function getAuthHeader(config, forceRefresh = false) {
-  if (config.clientId) {
+  if (config.apiToken) {
+    // SSWS API token (preferred)
+    return `SSWS ${config.apiToken}`;
+  } else if (config.clientId) {
+    // OAuth client credentials flow (fallback)
     if (!cachedAccessToken || isTokenExpired() || forceRefresh) {
-      if (config.authFlow === 'device') {
-        cachedAccessToken = await getAccessTokenDeviceFlow(config);
-        tokenExpiresAt = Date.now() + (60 * 60 * 1000);
-      } else if (config.clientSecret || config.privateKey || config.privateKeyPath) {
+      if (config.clientSecret || config.privateKey || config.privateKeyPath) {
         cachedAccessToken = await getAccessToken(config);
         tokenExpiresAt = Date.now() + (60 * 60 * 1000);
       } else {
-        throw new Error('OAuth configuration incomplete: missing authentication credentials');
+        throw new Error('Authentication incomplete: OAuth clientId found but missing credentials. API Token (SSWS) is recommended instead.');
       }
     }
     return `Bearer ${cachedAccessToken}`;
-  } else if (config.apiToken) {
-    return `SSWS ${config.apiToken}`;
   } else {
     throw new Error('No authentication credentials found in configuration');
   }

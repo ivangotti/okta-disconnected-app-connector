@@ -1,9 +1,130 @@
 import okta from '@okta/okta-sdk-nodejs';
 const { Client } = okta;
-import { getConfig, saveConfig, selectCsvFile, getAccessToken, getAccessTokenDeviceFlow } from './config.js';
+import { getConfig, saveConfig, selectCsvFile, getAccessToken, reconfigureOAuthCredentials } from './config.js';
 import fs from 'fs';
 import path from 'path';
 import { parse } from 'csv-parse/sync';
+
+// ANSI color codes for terminal output
+const colors = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+  italic: '\x1b[3m',
+  underline: '\x1b[4m',
+  // Text colors
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  cyan: '\x1b[36m',
+  white: '\x1b[37m',
+  gray: '\x1b[90m',
+  // Bright colors
+  brightRed: '\x1b[91m',
+  brightGreen: '\x1b[92m',
+  brightYellow: '\x1b[93m',
+  brightBlue: '\x1b[94m',
+  brightMagenta: '\x1b[95m',
+  brightCyan: '\x1b[96m',
+};
+
+// Helper functions for styled output
+const style = {
+  // Status indicators
+  success: (text) => `${colors.green}${text}${colors.reset}`,
+  warning: (text) => `${colors.yellow}${text}${colors.reset}`,
+  error: (text) => `${colors.red}${text}${colors.reset}`,
+  info: (text) => `${colors.cyan}${text}${colors.reset}`,
+
+  // Data highlighting
+  id: (text) => `${colors.brightCyan}${text}${colors.reset}`,
+  name: (text) => `${colors.brightMagenta}${colors.bold}${text}${colors.reset}`,
+  value: (text) => `${colors.brightGreen}${text}${colors.reset}`,
+  attr: (text) => `${colors.brightYellow}${text}${colors.reset}`,
+  url: (text) => `${colors.blue}${colors.underline}${text}${colors.reset}`,
+
+  // Structural
+  label: (text) => `${colors.white}${colors.bold}${text}${colors.reset}`,
+  dim: (text) => `${colors.dim}${text}${colors.reset}`,
+  bold: (text) => `${colors.bold}${text}${colors.reset}`,
+  step: (text) => `${colors.brightBlue}${colors.bold}${text}${colors.reset}`,
+
+  // Numbers and counts
+  count: (text) => `${colors.brightYellow}${colors.bold}${text}${colors.reset}`,
+
+  // Status badges
+  badge: {
+    ok: () => `${colors.green}✓${colors.reset}`,
+    fail: () => `${colors.red}✗${colors.reset}`,
+    warn: () => `${colors.yellow}⚠${colors.reset}`,
+    skip: () => `${colors.gray}⊘${colors.reset}`,
+    arrow: () => `${colors.dim}→${colors.reset}`,
+    bullet: () => `${colors.dim}•${colors.reset}`,
+  }
+};
+
+/**
+ * Colorize JSON for pretty terminal output
+ */
+function colorizeJson(obj, indent = 0) {
+  const spaces = '  '.repeat(indent);
+
+  if (obj === null) return `${colors.dim}null${colors.reset}`;
+  if (obj === undefined) return `${colors.dim}undefined${colors.reset}`;
+
+  if (typeof obj === 'string') {
+    return `${colors.green}"${obj}"${colors.reset}`;
+  }
+  if (typeof obj === 'number') {
+    return `${colors.brightYellow}${obj}${colors.reset}`;
+  }
+  if (typeof obj === 'boolean') {
+    return `${colors.brightMagenta}${obj}${colors.reset}`;
+  }
+
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return `${colors.dim}[]${colors.reset}`;
+    const items = obj.map(item => `${spaces}  ${colorizeJson(item, indent + 1)}`);
+    return `[\n${items.join(',\n')}\n${spaces}]`;
+  }
+
+  if (typeof obj === 'object') {
+    const keys = Object.keys(obj);
+    if (keys.length === 0) return `${colors.dim}{}${colors.reset}`;
+    const entries = keys.map(key => {
+      const coloredKey = `${colors.cyan}"${key}"${colors.reset}`;
+      const coloredValue = colorizeJson(obj[key], indent + 1);
+      return `${spaces}  ${coloredKey}: ${coloredValue}`;
+    });
+    return `{\n${entries.join(',\n')}\n${spaces}}`;
+  }
+
+  return String(obj);
+}
+
+/**
+ * Format JSON with colors for console output (compact version for inline)
+ */
+function formatJsonCompact(obj) {
+  if (typeof obj === 'string') return `${colors.green}"${obj}"${colors.reset}`;
+  if (typeof obj === 'number') return `${colors.brightYellow}${obj}${colors.reset}`;
+  if (typeof obj === 'boolean') return `${colors.brightMagenta}${obj}${colors.reset}`;
+  if (obj === null) return `${colors.dim}null${colors.reset}`;
+
+  try {
+    const json = JSON.stringify(obj, null, 2);
+    return json
+      .replace(/"([^"]+)":/g, `${colors.cyan}"$1"${colors.reset}:`)
+      .replace(/: "([^"]+)"/g, `: ${colors.green}"$1"${colors.reset}`)
+      .replace(/: (\d+)/g, `: ${colors.brightYellow}$1${colors.reset}`)
+      .replace(/: (true|false)/g, `: ${colors.brightMagenta}$1${colors.reset}`)
+      .replace(/: null/g, `: ${colors.dim}null${colors.reset}`);
+  } catch {
+    return String(obj);
+  }
+}
 
 // Global access token cache with expiration tracking
 let cachedAccessToken = null;
@@ -57,37 +178,31 @@ function clearCachedToken() {
 
 /**
  * Get authorization header for API calls
- * Supports Device Flow, Client Credentials, and SSWS token
+ * Supports SSWS API token (preferred) and OAuth client credentials
  * Automatically refreshes expired OAuth tokens
  */
 async function getAuthHeader(config, forceRefresh = false) {
-  if (config.clientId) {
-    // Use OAuth - get or reuse cached token, refresh if expired
+  if (config.apiToken) {
+    // SSWS API token (preferred)
+    return `SSWS ${config.apiToken}`;
+  } else if (config.clientId) {
+    // OAuth client credentials flow (optional)
     if (!cachedAccessToken || isTokenExpired() || forceRefresh) {
       if (forceRefresh && cachedAccessToken) {
         console.log('   → Token expired or invalid, refreshing...');
       }
-      if (config.authFlow === 'device') {
-        // Device flow - user authenticates in browser
-        cachedAccessToken = await getAccessTokenDeviceFlow(config);
-        // Device flow tokens typically last 1 hour
-        tokenExpiresAt = Date.now() + (60 * 60 * 1000);
-      } else if (config.clientSecret || config.privateKey || config.privateKeyPath) {
-        // Client credentials flow (with client_secret or private_key_jwt)
+      if (config.clientSecret || config.privateKey || config.privateKeyPath) {
         cachedAccessToken = await getAccessToken(config);
         // Client credentials tokens typically last 1 hour (3600 seconds)
         tokenExpiresAt = Date.now() + (60 * 60 * 1000);
       } else {
-        throw new Error('OAuth configuration incomplete: missing authentication credentials (clientSecret, privateKey, or privateKeyPath)');
+        throw new Error('Authentication incomplete: OAuth clientId found but missing credentials. API Token (SSWS) is recommended instead.');
       }
       if (forceRefresh) {
         console.log('   ✓ Token refreshed successfully');
       }
     }
     return `Bearer ${cachedAccessToken}`;
-  } else if (config.apiToken) {
-    // Fallback to SSWS token (legacy)
-    return `SSWS ${config.apiToken}`;
   } else {
     throw new Error('No authentication credentials found in configuration');
   }
@@ -229,11 +344,35 @@ function getCsvColumnsWithDetails(csvFilePath) {
     // Get column names from the parsed data
     const allColumns = Object.keys(records[0] || {});
 
-    // Include ALL columns (including ent_* columns as custom attributes)
+    // Standard identity columns that should NOT be created as custom attributes
+    // These are used for user identification/login, not as app-specific attributes
+    const standardIdentityColumns = [
+      'username', 'login', 'email', 'user', 'userid', 'user_id', 'mail',
+      'firstname', 'first_name', 'lastname', 'last_name', 'displayname',
+      'display_name', 'name', 'fullname', 'full_name'
+    ];
+
+    // Filter out:
+    // 1. Entitlement columns (ent_*) - handled separately
+    // 2. Standard identity columns - used for login, not custom attributes
+    const excluded = [];
+    const included = allColumns.filter(col => {
+      const colLower = col.toLowerCase();
+      if (col.startsWith('ent_')) {
+        excluded.push(col + ' (entitlement)');
+        return false;
+      }
+      if (standardIdentityColumns.includes(colLower)) {
+        excluded.push(col + ' (identity field)');
+        return false;
+      }
+      return true;
+    });
+
     return {
       total: allColumns.length,
-      included: allColumns,  // All columns
-      excluded: []           // No longer excluding ent_* columns
+      included: included,
+      excluded: excluded
     };
   } catch (error) {
     throw new Error(`Error reading CSV file: ${error.message}`);
@@ -646,71 +785,72 @@ async function addEntitlementValue(config, entitlementId, valueName, appId) {
  * Process entitlement catalog and create entitlements in Okta
  */
 async function processEntitlements(config, appId, csvFilePath, existingResourceId = null) {
-  console.log('📦 STEP 7: Entitlement Catalog & Creation');
-  console.log('   → Parsing CSV file for entitlement columns (ent_*)...');
+  console.log('');
+  console.log(`📦 ${style.step('STEP 7: Entitlement Catalog & Creation')}`);
+  console.log(`   ${style.badge.arrow()} Parsing CSV file for entitlement columns ${style.dim('(ent_*)')}...`);
 
   const catalog = generateEntitlementCatalog(csvFilePath);
   const entColumns = Object.keys(catalog);
 
   if (entColumns.length === 0) {
-    console.log('   ℹ No entitlement columns found in CSV');
-    console.log('   → Entitlement columns must start with "ent_" prefix');
+    console.log(`   ${style.info('ℹ')} No entitlement columns found in CSV`);
+    console.log(`   ${style.badge.arrow()} ${style.dim('Entitlement columns must start with "ent_" prefix')}`);
     console.log('');
     return;
   }
 
-  console.log(`   ✓ Found ${entColumns.length} entitlement column(s):`);
+  console.log(`   ${style.badge.ok()} Found ${style.count(entColumns.length)} entitlement column(s):`);
   let totalEntitlements = 0;
   for (const [column, values] of Object.entries(catalog)) {
-    console.log(`     • ${column}: ${values.length} unique value(s)`);
+    console.log(`     ${style.badge.bullet()} ${style.attr(column)}: ${style.count(values.length)} unique value(s)`);
     totalEntitlements += values.length;
   }
-  console.log(`   → Total unique entitlements to create: ${totalEntitlements}`);
+  console.log(`   ${style.badge.arrow()} Total unique entitlements to create: ${style.count(totalEntitlements)}`);
   console.log('');
 
   // Use existing resource ID if provided, otherwise fetch it
   let resourceId = existingResourceId;
 
   if (!resourceId) {
-    console.log('   → Fetching governance resource ID for app...');
-    console.log(`   → API Call: GET /governance/api/v1/resources?filter=source.id eq "${appId}"`);
+    console.log(`   ${style.badge.arrow()} Fetching governance resource ID for app...`);
+    console.log(`   ${style.badge.arrow()} ${style.dim('API Call:')} ${style.dim('GET /governance/api/v1/resources?filter=source.id eq "' + appId + '"')}`);
     resourceId = await getGovernanceResourceId(config, appId);
   } else {
-    console.log(`   → Using governance resource ID from Step 4: ${resourceId}`);
+    console.log(`   ${style.badge.arrow()} Using governance resource ID from Step 4: ${style.id(resourceId)}`);
   }
 
   if (!resourceId) {
-    console.log('   ⚠ Could not find governance resource for this app');
-    console.log('   → Entitlement management may not be enabled yet');
-    console.log('   → Try enabling it in Okta Admin Console: Identity Governance → Resources');
+    console.log(`   ${style.badge.warn()} ${style.warning('Could not find governance resource for this app')}`);
+    console.log(`   ${style.badge.arrow()} ${style.dim('Entitlement management may not be enabled yet')}`);
+    console.log(`   ${style.badge.arrow()} ${style.dim('Try enabling it in Okta Admin Console: Identity Governance → Resources')}`);
     console.log('');
-    console.log('   📋 Entitlement Catalog Summary:');
+    console.log(`   📋 ${style.label('Entitlement Catalog Summary:')}`);
     for (const [column, values] of Object.entries(catalog)) {
       const attributeName = column.substring(4); // Remove 'ent_' prefix
-      console.log(`     • ${attributeName}: ${values.join(', ')}`);
+      console.log(`     ${style.badge.bullet()} ${style.attr(attributeName)}: ${style.value(values.join(', '))}`);
     }
     console.log('');
     return;
   }
 
-  console.log(`   ✓ Governance resource found: ${resourceId}`);
+  console.log(`   ${style.badge.ok()} Governance resource found: ${style.id(resourceId)}`);
   console.log('');
 
   // Check existing entitlements
-  console.log('   → Fetching existing entitlements...');
-  console.log(`   → API Call: GET /governance/api/v1/resources/${resourceId}/entitlements`);
+  console.log(`   ${style.badge.arrow()} Fetching existing entitlements...`);
+  console.log(`   ${style.badge.arrow()} ${style.dim('API Call:')} ${style.dim('GET /governance/api/v1/resources/' + resourceId + '/entitlements')}`);
 
   let existingEntitlements = [];
   try {
     existingEntitlements = await getAppEntitlements(config, resourceId, appId);
   } catch (error) {
     if (error.message.includes('405')) {
-      console.log(`   ⚠ Cannot fetch existing entitlements (HTTP 405)`);
-      console.log('   → Assuming no existing entitlements, will attempt to create all');
+      console.log(`   ${style.badge.warn()} ${style.warning('Cannot fetch existing entitlements')} ${style.dim('(HTTP 405)')}`);
+      console.log(`   ${style.badge.arrow()} ${style.dim('Assuming no existing entitlements, will attempt to create all')}`);
       console.log('');
     } else {
-      console.log(`   ⚠ Could not fetch entitlements from governance API: ${error.message}`);
-      console.log('   → Proceeding to create entitlements');
+      console.log(`   ${style.badge.warn()} ${style.warning('Could not fetch entitlements from governance API:')} ${error.message}`);
+      console.log(`   ${style.badge.arrow()} ${style.dim('Proceeding to create entitlements')}`);
       console.log('');
     }
     // Continue with empty array - we'll try to create all entitlements
@@ -721,11 +861,11 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
     existingEntitlements = [];
   }
 
-  console.log(`   ✓ Found ${existingEntitlements.length} existing entitlements`);
+  console.log(`   ${style.badge.ok()} Found ${style.count(existingEntitlements.length)} existing entitlements`);
   console.log('');
 
   // Create entitlements from catalog
-  console.log('   → Creating entitlements from CSV catalog...');
+  console.log(`   ${style.badge.arrow()} Creating entitlements from CSV catalog...`);
   console.log('');
 
   let created = 0;
@@ -736,7 +876,7 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
   // Create ONE entitlement per column (attribute) with all values
   for (const [column, values] of Object.entries(catalog)) {
     const attributeName = column.substring(4); // Remove 'ent_' prefix
-    console.log(`   → Creating ${attributeName} entitlement with ${values.length} value(s):`);
+    console.log(`   ${style.badge.arrow()} Creating ${style.attr(attributeName)} entitlement with ${style.count(values.length)} value(s):`);
 
     try {
       // Check if entitlement already exists
@@ -745,7 +885,7 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
       );
 
       if (existingEnt) {
-        console.log(`     ⊘ ${attributeName} entitlement already exists (skipped)`);
+        console.log(`     ${style.badge.skip()} ${style.attr(attributeName)} entitlement already exists ${style.dim('(skipped)')}`);
         // Store existing entitlement for later use
         createdEntitlements[attributeName.toLowerCase()] = existingEnt;
         skipped++;
@@ -771,9 +911,9 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
         }))
       };
 
-      console.log(`     → Values: ${values.join(', ')}`);
+      console.log(`     ${style.badge.arrow()} Values: ${style.value(values.join(', '))}`);
       const newEntitlement = await createEntitlement(config, resourceId, entitlementData);
-      console.log(`     ✓ ${attributeName} entitlement created with ${values.length} value(s)`);
+      console.log(`     ${style.badge.ok()} ${style.attr(attributeName)} entitlement created with ${style.count(values.length)} value(s)`);
 
       // Store the created entitlement for later use
       if (newEntitlement && newEntitlement.id) {
@@ -783,35 +923,35 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
     } catch (error) {
       // Check if error is because entitlement already exists
       if (error.message.includes('needs to be unique')) {
-        console.log(`     ⊘ ${attributeName} entitlement already exists, fetching...`);
+        console.log(`     ${style.badge.skip()} ${style.attr(attributeName)} entitlement already exists, fetching...`);
         try {
           const existingEnt = await getEntitlementByName(config, appId, attributeName);
           if (existingEnt && existingEnt.id) {
-            console.log(`     ✓ Found existing ${attributeName} entitlement (${existingEnt.id})`);
+            console.log(`     ${style.badge.ok()} Found existing ${style.attr(attributeName)} entitlement ${style.dim('(' + existingEnt.id + ')')}`);
             createdEntitlements[attributeName.toLowerCase()] = existingEnt;
             skipped++;
           } else {
-            console.log(`     ⚠ Could not fetch existing ${attributeName} entitlement`);
+            console.log(`     ${style.badge.warn()} ${style.warning('Could not fetch existing')} ${style.attr(attributeName)} entitlement`);
             failed++;
           }
         } catch (fetchError) {
-          console.log(`     ⚠ Error fetching existing entitlement: ${fetchError.message}`);
+          console.log(`     ${style.badge.warn()} ${style.warning('Error fetching existing entitlement:')} ${fetchError.message}`);
           failed++;
         }
       } else {
-        console.log(`     ✗ ${attributeName} failed: ${error.message}`);
+        console.log(`     ${style.badge.fail()} ${style.attr(attributeName)} ${style.error('failed:')} ${error.message}`);
         failed++;
       }
     }
     console.log('');
   }
 
-  console.log('   📊 Entitlement Creation Summary:');
-  console.log(`     • Total entitlement columns: ${Object.keys(catalog).length}`);
-  console.log(`     • Successfully created: ${created}`);
-  console.log(`     • Already existed: ${skipped}`);
+  console.log(`   📊 ${style.label('Entitlement Creation Summary:')}`);
+  console.log(`     ${style.badge.bullet()} Total entitlement columns: ${style.count(Object.keys(catalog).length)}`);
+  console.log(`     ${style.badge.bullet()} ${style.success('Successfully created:')} ${style.count(created)}`);
+  console.log(`     ${style.badge.bullet()} Already existed: ${style.count(skipped)}`);
   if (failed > 0) {
-    console.log(`     • Failed: ${failed}`);
+    console.log(`     ${style.badge.bullet()} ${style.error('Failed:')} ${style.count(failed)}`);
   }
   console.log('');
 
@@ -1151,8 +1291,8 @@ async function revokeGrant(config, grantId) {
  * Process users from CSV - create/update users and assign to app
  */
 async function processUsers(config, appId, csvFilePath, resourceId = null, entitlementsMap = {}) {
-  console.log('👥 STEP 8: User Provisioning');
-  console.log('   → Reading user data from CSV...');
+  console.log(`👥 ${style.step('STEP 8: User Provisioning')}`);
+  console.log(`   ${style.badge.arrow()} Reading user data from CSV...`);
 
   try {
     const fileContent = fs.readFileSync(csvFilePath, 'utf8');
@@ -1162,7 +1302,7 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
       trim: true
     });
 
-    console.log(`   ✓ Found ${records.length} user(s) in CSV`);
+    console.log(`   ${style.badge.ok()} Found ${style.count(records.length)} user(s) in CSV`);
     console.log('');
 
     let created = 0;
@@ -1186,7 +1326,7 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
       }
 
       if (!username) {
-        console.log(`   ⚠ Skipping row - no username/email column found (tried: ${usernameKeys.join(', ')})`);
+        console.log(`   ${style.badge.warn()} ${style.warning('Skipping row')} - no username/email column found ${style.dim('(tried: ' + usernameKeys.join(', ') + ')')}`);
         failed++;
         continue;
       }
@@ -1196,7 +1336,7 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
       let appUserProfile;
 
       try {
-        console.log(`   → Processing user ${i + 1}/${records.length}: ${username}`);
+        console.log(`   ${style.badge.arrow()} Processing user ${style.dim(i + 1 + '/' + records.length)}: ${style.name(username)}`);
 
         // Build user profile dynamically from CSV columns using attribute mapping
         const userProfile = {
@@ -1221,12 +1361,12 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
         // Check if user exists
         const existingUser = await findUser(config, username);
         if (existingUser) {
-          console.log(`     → User exists (${existingUser.id}), updating...`);
+          console.log(`     ${style.badge.arrow()} User exists ${style.dim('(' + existingUser.id + ')')}, updating...`);
           await updateUser(config, existingUser.id, { profile: userProfile });
           userId = existingUser.id;
           updated++;
         } else {
-          console.log(`     → User does not exist, creating...`);
+          console.log(`     ${style.badge.arrow()} User does not exist, creating...`);
           // Generate a random secure password for new users
           const randomPassword = generateSecurePassword();
           const newUser = await createUser(config, {
@@ -1237,23 +1377,33 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
           });
           userId = newUser.id;
           created++;
-          console.log(`     ✓ User created (${userId}) - password reset required on first login`);
+          console.log(`     ${style.badge.ok()} User created ${style.dim('(' + userId + ')')} - ${style.dim('password reset required on first login')}`);
         }
 
-        // Build app user profile with custom attributes INCLUDING entitlements
+        // Build app user profile with ONLY valid custom attributes
+        // Exclude identity columns (used for login) and entitlement columns (handled via grants)
         appUserProfile = {};
 
-        // Add ALL columns as app user attributes (including ent_* entitlement columns)
+        // Standard identity columns to exclude from app user profile
+        const identityColumns = [
+          'username', 'login', 'email', 'user', 'userid', 'user_id', 'mail',
+          'firstname', 'first_name', 'lastname', 'last_name', 'displayname',
+          'display_name', 'name', 'fullname', 'full_name'
+        ];
+
         for (const [key, value] of Object.entries(record)) {
-          if (value) {
-            appUserProfile[key] = value;
-          }
+          if (!value) continue;
+          // Skip entitlement columns (ent_*) - handled via governance grants
+          if (key.startsWith('ent_')) continue;
+          // Skip identity columns - used for user identification, not app attributes
+          if (identityColumns.includes(key.toLowerCase())) continue;
+          appUserProfile[key] = value;
         }
 
-        // Assign user to app with ALL attributes (including ent_* entitlements)
-        console.log(`     → Assigning user to app...`);
+        // Assign user to app with custom attributes only
+        console.log(`     ${style.badge.arrow()} Assigning user to app...`);
         await assignUserToApp(config, appId, userId, appUserProfile);
-        console.log(`     ✓ User assigned to app with attributes`);
+        console.log(`     ${style.badge.ok()} User assigned to app with attributes`);
         assigned++;
 
         // Create governance grant with entitlements
@@ -1280,20 +1430,20 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
                   // If value doesn't exist, create it dynamically
                   if (!entValue || !entValue.id) {
                     try {
-                      console.log(`     → New entitlement value detected: "${val}" for ${entitlementName}`);
+                      console.log(`     ${style.badge.arrow()} New entitlement value detected: ${style.value('"' + val + '"')} for ${style.attr(entitlementName)}`);
                       console.log(`       Creating new value in Okta...`);
                       const newValue = await addEntitlementValue(config, entitlement.id, val, appId);
                       if (newValue && newValue.id) {
-                        console.log(`       ✓ Created new entitlement value: ${val} (${newValue.id})`);
+                        console.log(`       ${style.badge.ok()} Created new entitlement value: ${style.value(val)} ${style.dim('(' + newValue.id + ')')}`);
                         // Add to local cache so we don't try to create again
                         entitlement.values.push(newValue);
                         entValue = newValue;
                       } else {
-                        console.log(`       ⚠ Could not create entitlement value: ${val}`);
+                        console.log(`       ${style.badge.warn()} ${style.warning('Could not create entitlement value:')} ${val}`);
                         continue;
                       }
                     } catch (createError) {
-                      console.log(`       ⚠ Failed to create entitlement value: ${createError.message}`);
+                      console.log(`       ${style.badge.warn()} ${style.warning('Failed to create entitlement value:')} ${createError.message}`);
                       continue;
                     }
                   }
@@ -1330,24 +1480,26 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
 
           if (entitlementsArray.length > 0) {
             try {
-              console.log(`     → Creating governance grant with ${entitlementsArray.length} entitlement(s)...`);
+              console.log(`     ${style.badge.arrow()} Creating governance grant with ${style.count(entitlementsArray.length)} entitlement(s)...`);
 
               // Debug: log the payload for first user
               if (i === 0) {
-                console.log(`     → Debug payload:`, JSON.stringify({
+                const debugPayload = {
                   grantType: "CUSTOM",
                   targetPrincipal: { externalId: userId, type: "OKTA_USER" },
                   actor: "ADMIN",
                   target: { externalId: appId, type: "APPLICATION" },
                   entitlements: entitlementsArray
-                }, null, 2).substring(0, 800));
+                };
+                console.log(`     ${style.badge.arrow()} ${style.dim('Debug payload:')}`);
+                console.log(formatJsonCompact(debugPayload).split('\n').map(line => `       ${line}`).join('\n').substring(0, 1200));
               }
 
               await createEntitlementGrant(config, appId, userId, entitlementsArray);
-              console.log(`     ✓ Governance grant created`);
+              console.log(`     ${style.badge.ok()} ${style.success('Governance grant created')}`);
               grantsCreated++;
             } catch (error) {
-              console.log(`     ⚠ Grant creation failed: ${error.message}`);
+              console.log(`     ${style.badge.warn()} ${style.warning('Grant creation failed:')} ${error.message}`);
               // Don't fail the whole user - they're still assigned to the app
             }
           }
@@ -1357,46 +1509,46 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
 
         // Add small delay to avoid rate limits (every 10 users)
         if ((i + 1) % 10 === 0 && i + 1 < records.length) {
-          console.log(`   ⏸  Pausing briefly to avoid rate limits... (${i + 1}/${records.length} processed)`);
+          console.log(`   ${style.dim('⏸  Pausing briefly to avoid rate limits...')} ${style.dim('(' + (i + 1) + '/' + records.length + ' processed)')}`);
           await new Promise(resolve => setTimeout(resolve, 2000));
           console.log('');
         }
       } catch (error) {
         if (error.message.includes('429')) {
-          console.log(`     ⚠ Rate limit hit, waiting 5 seconds...`);
+          console.log(`     ${style.badge.warn()} ${style.warning('Rate limit hit, waiting 5 seconds...')}`);
           await new Promise(resolve => setTimeout(resolve, 5000));
           // Retry once
           try {
             await assignUserToApp(config, appId, userId, appUserProfile);
-            console.log(`     ✓ User assigned to app with attributes (retry succeeded)`);
+            console.log(`     ${style.badge.ok()} User assigned to app with attributes ${style.dim('(retry succeeded)')}`);
             assigned++;
           } catch (retryError) {
-            console.log(`     ✗ Failed after retry: ${retryError.message}`);
+            console.log(`     ${style.badge.fail()} ${style.error('Failed after retry:')} ${retryError.message}`);
             failed++;
           }
         } else {
-          console.log(`     ✗ Failed: ${error.message}`);
+          console.log(`     ${style.badge.fail()} ${style.error('Failed:')} ${error.message}`);
           failed++;
         }
         console.log('');
       }
     }
 
-    console.log('   📊 User Provisioning Summary:');
-    console.log(`     • Total users in CSV: ${records.length}`);
-    console.log(`     • Created: ${created}`);
-    console.log(`     • Updated: ${updated}`);
-    console.log(`     • Assigned to app: ${assigned}`);
+    console.log(`   📊 ${style.label('User Provisioning Summary:')}`);
+    console.log(`     ${style.badge.bullet()} Total users in CSV: ${style.count(records.length)}`);
+    console.log(`     ${style.badge.bullet()} ${style.success('Created:')} ${style.count(created)}`);
+    console.log(`     ${style.badge.bullet()} Updated: ${style.count(updated)}`);
+    console.log(`     ${style.badge.bullet()} Assigned to app: ${style.count(assigned)}`);
     if (grantsCreated > 0) {
-      console.log(`     • Governance grants created: ${grantsCreated}`);
+      console.log(`     ${style.badge.bullet()} Governance grants created: ${style.count(grantsCreated)}`);
     }
     if (failed > 0) {
-      console.log(`     • Failed: ${failed}`);
+      console.log(`     ${style.badge.bullet()} ${style.error('Failed:')} ${style.count(failed)}`);
     }
     console.log('');
 
   } catch (error) {
-    console.log(`   ✗ Error processing users: ${error.message}`);
+    console.log(`   ${style.badge.fail()} ${style.error('Error processing users:')} ${error.message}`);
     console.log('');
   }
 }
@@ -1651,8 +1803,8 @@ async function processAttributeMappings(config, appId, createdAttributes) {
   }
 
   console.log('');
-  console.log('🔗 STEP 6: Profile Attribute Mapping');
-  console.log('   → Analyzing custom attributes for Okta user profile mappings...');
+  console.log(`🔗 ${style.step('STEP 6: Profile Attribute Mapping')}`);
+  console.log(`   ${style.badge.arrow()} Analyzing custom attributes for Okta user profile mappings...`);
   console.log('');
 
   // Find matching Okta attributes
@@ -1671,41 +1823,41 @@ async function processAttributeMappings(config, appId, createdAttributes) {
     }
   }
 
-  console.log(`   → Matched attributes: ${matchedAttributes.length}`);
+  console.log(`   ${style.badge.arrow()} Matched attributes: ${style.count(matchedAttributes.length)}`);
   if (matchedAttributes.length > 0) {
     matchedAttributes.forEach(match => {
-      console.log(`     • ${match.customAttribute} → user.${match.oktaAttribute}`);
+      console.log(`     ${style.badge.bullet()} ${style.attr(match.customAttribute)} ${style.dim('→')} ${style.value('user.' + match.oktaAttribute)}`);
     });
   }
   console.log('');
 
   if (unmatchedAttributes.length > 0) {
-    console.log(`   → Unmatched attributes (no standard Okta field): ${unmatchedAttributes.length}`);
+    console.log(`   ${style.badge.arrow()} Unmatched attributes ${style.dim('(no standard Okta field)')}: ${style.count(unmatchedAttributes.length)}`);
     unmatchedAttributes.forEach(attr => {
-      console.log(`     • ${attr} (will remain as custom attribute only)`);
+      console.log(`     ${style.badge.bullet()} ${style.attr(attr)} ${style.dim('(will remain as custom attribute only)')}`);
     });
     console.log('');
   }
 
   if (matchedAttributes.length === 0) {
-    console.log('   ℹ No attributes matched Okta user profile fields');
-    console.log('   → Skipping profile mapping');
+    console.log(`   ${style.info('ℹ')} No attributes matched Okta user profile fields`);
+    console.log(`   ${style.badge.arrow()} ${style.dim('Skipping profile mapping')}`);
     return;
   }
 
   // Get the profile mapping
-  console.log('   → Fetching profile mapping configuration...');
-  console.log(`   → API Call: GET /api/v1/mappings?sourceId=${appId}`);
+  console.log(`   ${style.badge.arrow()} Fetching profile mapping configuration...`);
+  console.log(`   ${style.badge.arrow()} ${style.dim('API Call:')} ${style.dim('GET /api/v1/mappings?sourceId=' + appId)}`);
   const profileMapping = await getProfileMapping(config, appId);
 
   if (!profileMapping) {
-    console.log('   ✗ Profile mapping not found for this application');
-    console.log('   → This may happen if the app was just created');
-    console.log('   → Mappings can be configured manually in Okta Admin Console');
+    console.log(`   ${style.badge.fail()} ${style.error('Profile mapping not found for this application')}`);
+    console.log(`   ${style.badge.arrow()} ${style.dim('This may happen if the app was just created')}`);
+    console.log(`   ${style.badge.arrow()} ${style.dim('Mappings can be configured manually in Okta Admin Console')}`);
     return;
   }
 
-  console.log(`   ✓ Profile mapping found (ID: ${profileMapping.id})`);
+  console.log(`   ${style.badge.ok()} Profile mapping found ${style.dim('(ID: ' + profileMapping.id + ')')}`);
   console.log('');
 
   // Build mapping properties
@@ -1713,7 +1865,7 @@ async function processAttributeMappings(config, appId, createdAttributes) {
   let mappingsAdded = 0;
   let mappingsSkipped = 0;
 
-  console.log('   → Creating attribute mappings...');
+  console.log(`   ${style.badge.arrow()} Creating attribute mappings...`);
   console.log('');
 
   for (const match of matchedAttributes) {
@@ -1721,12 +1873,12 @@ async function processAttributeMappings(config, appId, createdAttributes) {
 
     // Check if mapping already exists
     if (currentProperties[mappingKey]) {
-      console.log(`   → Mapping for ${match.customAttribute}:`);
-      console.log(`     ℹ Already exists: user.${mappingKey}`);
+      console.log(`   ${style.badge.arrow()} Mapping for ${style.attr(match.customAttribute)}:`);
+      console.log(`     ${style.info('ℹ')} Already exists: ${style.value('user.' + mappingKey)}`);
       mappingsSkipped++;
     } else {
-      console.log(`   → Mapping for ${match.customAttribute}:`);
-      console.log(`     ✓ Creating: appuser.${match.customAttribute} → user.${mappingKey}`);
+      console.log(`   ${style.badge.arrow()} Mapping for ${style.attr(match.customAttribute)}:`);
+      console.log(`     ${style.badge.ok()} Creating: ${style.attr('appuser.' + match.customAttribute)} ${style.dim('→')} ${style.value('user.' + mappingKey)}`);
 
       // Add new mapping
       currentProperties[mappingKey] = {
@@ -1739,26 +1891,26 @@ async function processAttributeMappings(config, appId, createdAttributes) {
 
   // Update the mapping if we added any
   if (mappingsAdded > 0) {
-    console.log(`   → Updating profile mapping with ${mappingsAdded} new mapping(s)...`);
-    console.log(`   → API Call: POST /api/v1/mappings/${profileMapping.id}`);
+    console.log(`   ${style.badge.arrow()} Updating profile mapping with ${style.count(mappingsAdded)} new mapping(s)...`);
+    console.log(`   ${style.badge.arrow()} ${style.dim('API Call:')} ${style.dim('POST /api/v1/mappings/' + profileMapping.id)}`);
 
     const updatedMapping = {
       properties: currentProperties
     };
 
     await updateProfileMapping(config, profileMapping.id, updatedMapping);
-    console.log('   ✓ Profile mappings updated successfully');
+    console.log(`   ${style.badge.ok()} ${style.success('Profile mappings updated successfully')}`);
   } else {
-    console.log('   ℹ All matching attributes already have mappings');
+    console.log(`   ${style.info('ℹ')} All matching attributes already have mappings`);
   }
 
   console.log('');
-  console.log('   📊 Mapping Summary:');
-  console.log(`     • Total attributes analyzed: ${createdAttributes.length}`);
-  console.log(`     • Matched to Okta fields: ${matchedAttributes.length}`);
-  console.log(`     • Mappings created: ${mappingsAdded}`);
-  console.log(`     • Mappings already existed: ${mappingsSkipped}`);
-  console.log(`     • Unmatched attributes: ${unmatchedAttributes.length}`);
+  console.log(`   📊 ${style.label('Mapping Summary:')}`);
+  console.log(`     ${style.badge.bullet()} Total attributes analyzed: ${style.count(createdAttributes.length)}`);
+  console.log(`     ${style.badge.bullet()} Matched to Okta fields: ${style.count(matchedAttributes.length)}`);
+  console.log(`     ${style.badge.bullet()} ${style.success('Mappings created:')} ${style.count(mappingsAdded)}`);
+  console.log(`     ${style.badge.bullet()} Mappings already existed: ${style.count(mappingsSkipped)}`);
+  console.log(`     ${style.badge.bullet()} Unmatched attributes: ${style.count(unmatchedAttributes.length)}`);
 }
 
 /**
@@ -1770,39 +1922,39 @@ async function processCustomAttributes(config, appId, csvFilePath) {
   const columns = allColumns.included;
   const excludedColumns = allColumns.excluded;
 
-  console.log(`   ✓ CSV parsed successfully`);
-  console.log(`   → Total columns found: ${allColumns.total}`);
+  console.log(`   ${style.badge.ok()} CSV parsed successfully`);
+  console.log(`   ${style.badge.arrow()} Total columns found: ${style.count(allColumns.total)}`);
 
   if (excludedColumns.length > 0) {
-    console.log(`   → Excluded columns (ent_*): ${excludedColumns.length}`);
-    excludedColumns.forEach(col => console.log(`     • ${col} (skipped)`));
+    console.log(`   ${style.badge.arrow()} Excluded columns ${style.dim('(ent_*)')}: ${style.count(excludedColumns.length)}`);
+    excludedColumns.forEach(col => console.log(`     ${style.badge.bullet()} ${style.attr(col)} ${style.dim('(skipped)')}`));
   }
 
-  console.log(`   → Columns to process: ${columns.length}`);
+  console.log(`   ${style.badge.arrow()} Columns to process: ${style.count(columns.length)}`);
   if (columns.length > 0) {
-    columns.forEach(col => console.log(`     • ${col}`));
+    columns.forEach(col => console.log(`     ${style.badge.bullet()} ${style.attr(col)}`));
   }
   console.log('');
 
   if (columns.length === 0) {
-    console.log('   ℹ No columns to process (all columns start with "ent_")');
+    console.log(`   ${style.info('ℹ')} No columns to process ${style.dim('(all columns start with "ent_")')}`);
     return []; // Return empty array for mapping
   }
 
   // Get existing schema
-  console.log('   → Fetching current app user schema from Okta...');
-  console.log(`   → API Call: GET /api/v1/meta/schemas/apps/${appId}/default`);
+  console.log(`   ${style.badge.arrow()} Fetching current app user schema from Okta...`);
+  console.log(`   ${style.badge.arrow()} ${style.dim('API Call:')} ${style.dim('GET /api/v1/meta/schemas/apps/' + appId + '/default')}`);
   const schema = await getAppUserSchema(config, appId);
 
   const existingAttributes = schema.definitions?.custom?.properties || {};
   const existingAttributeNames = Object.keys(existingAttributes);
 
-  console.log(`   ✓ Schema retrieved successfully`);
-  console.log(`   → Existing custom attributes: ${existingAttributeNames.length}`);
+  console.log(`   ${style.badge.ok()} Schema retrieved successfully`);
+  console.log(`   ${style.badge.arrow()} Existing custom attributes: ${style.count(existingAttributeNames.length)}`);
 
   if (existingAttributeNames.length > 0) {
-    console.log('   → Current attributes:');
-    existingAttributeNames.forEach(attr => console.log(`     • ${attr}`));
+    console.log(`   ${style.badge.arrow()} Current attributes:`);
+    existingAttributeNames.forEach(attr => console.log(`     ${style.badge.bullet()} ${style.attr(attr)}`));
   }
   console.log('');
 
@@ -1811,18 +1963,18 @@ async function processCustomAttributes(config, appId, csvFilePath) {
   const attributesAlreadyExist = columns.filter(col => existingAttributeNames.includes(col));
 
   if (attributesAlreadyExist.length > 0) {
-    console.log(`   ✓ ${attributesAlreadyExist.length} attribute(s) already exist (skipping):`);
-    attributesAlreadyExist.forEach(attr => console.log(`     • ${attr}`));
+    console.log(`   ${style.badge.ok()} ${style.count(attributesAlreadyExist.length)} attribute(s) already exist ${style.dim('(skipping)')}:`);
+    attributesAlreadyExist.forEach(attr => console.log(`     ${style.badge.bullet()} ${style.attr(attr)}`));
     console.log('');
   }
 
   if (attributesToCreate.length === 0) {
-    console.log('   ✓ All required attributes already exist');
-    console.log('   → No new attributes need to be created');
+    console.log(`   ${style.badge.ok()} ${style.success('All required attributes already exist')}`);
+    console.log(`   ${style.badge.arrow()} ${style.dim('No new attributes need to be created')}`);
     return columns; // Return all columns for mapping
   }
 
-  console.log(`   → Creating ${attributesToCreate.length} new custom attribute(s)...`);
+  console.log(`   ${style.badge.arrow()} Creating ${style.count(attributesToCreate.length)} new custom attribute(s)...`);
   console.log('');
 
   let successCount = 0;
@@ -1831,25 +1983,25 @@ async function processCustomAttributes(config, appId, csvFilePath) {
 
   for (const attributeName of attributesToCreate) {
     try {
-      console.log(`   → Creating attribute: "${attributeName}"`);
-      console.log(`     API Call: POST /api/v1/meta/schemas/apps/${appId}/default`);
+      console.log(`   ${style.badge.arrow()} Creating attribute: ${style.attr('"' + attributeName + '"')}`);
+      console.log(`     ${style.dim('API Call:')} ${style.dim('POST /api/v1/meta/schemas/apps/' + appId + '/default')}`);
       await createCustomAttribute(config, appId, attributeName);
-      console.log(`     ✓ Successfully created`);
+      console.log(`     ${style.badge.ok()} ${style.success('Successfully created')}`);
       successCount++;
       successfullyCreated.push(attributeName);
     } catch (error) {
-      console.error(`     ✗ Failed: ${error.message}`);
+      console.error(`     ${style.badge.fail()} ${style.error('Failed:')} ${error.message}`);
       failureCount++;
     }
     console.log('');
   }
 
-  console.log('   📊 Custom Attribute Summary:');
-  console.log(`     • Total columns in CSV: ${allColumns.total}`);
-  console.log(`     • Already existed: ${attributesAlreadyExist.length}`);
-  console.log(`     • Successfully created: ${successCount}`);
+  console.log(`   📊 ${style.label('Custom Attribute Summary:')}`);
+  console.log(`     ${style.badge.bullet()} Total columns in CSV: ${style.count(allColumns.total)}`);
+  console.log(`     ${style.badge.bullet()} Already existed: ${style.count(attributesAlreadyExist.length)}`);
+  console.log(`     ${style.badge.bullet()} ${style.success('Successfully created:')} ${style.count(successCount)}`);
   if (failureCount > 0) {
-    console.log(`     • Failed to create: ${failureCount}`);
+    console.log(`     ${style.badge.bullet()} ${style.error('Failed to create:')} ${style.count(failureCount)}`);
   }
 
   // Return all columns (both newly created and already existing) for mapping
@@ -2134,10 +2286,18 @@ async function syncUsers(config, appId, csvFilePath, resourceId, entitlementsMap
             });
           }
 
-          // Build app user profile
+          // Build app user profile (exclude identity and entitlement columns)
           const appUserProfile = {};
+          const identityColumns = [
+            'username', 'login', 'email', 'user', 'userid', 'user_id', 'mail',
+            'firstname', 'first_name', 'lastname', 'last_name', 'displayname',
+            'display_name', 'name', 'fullname', 'full_name'
+          ];
           for (const [key, value] of Object.entries(record)) {
-            if (value) appUserProfile[key] = value;
+            if (!value) continue;
+            if (key.startsWith('ent_')) continue;
+            if (identityColumns.includes(key.toLowerCase())) continue;
+            appUserProfile[key] = value;
           }
 
           // Assign to app
@@ -2245,35 +2405,35 @@ async function syncUsers(config, appId, csvFilePath, resourceId, entitlementsMap
 
     // Print verbose sync results
     const syncTime = new Date().toLocaleTimeString();
-    console.log('   ' + '─'.repeat(50));
-    console.log(`   📊 SYNC RESULTS [${syncTime}]`);
-    console.log('   ' + '─'.repeat(50));
-    console.log(`     Entitlements Created: ${entitlementsCreated}`);
-    console.log(`     Users Added:          ${added}`);
-    console.log(`     Users Updated:        ${updated}`);
-    console.log(`     Users Removed:        ${removed}`);
+    console.log(`   ${colors.cyan}${'─'.repeat(50)}${colors.reset}`);
+    console.log(`   📊 ${style.label('SYNC RESULTS')} ${style.dim('[' + syncTime + ']')}`);
+    console.log(`   ${colors.cyan}${'─'.repeat(50)}${colors.reset}`);
+    console.log(`     Entitlements Created: ${style.count(entitlementsCreated)}`);
+    console.log(`     Users Added:          ${style.count(added)}`);
+    console.log(`     Users Updated:        ${style.count(updated)}`);
+    console.log(`     Users Removed:        ${style.count(removed)}`);
     if (failed > 0) {
-      console.log(`     Failed:               ${failed}`);
+      console.log(`     ${style.error('Failed:')}               ${style.count(failed)}`);
     }
-    console.log(`     Total in Okta:        ${oktaAppUsers.length}`);
-    console.log(`     Total in CSV:         ${Object.keys(csvUsers).length}`);
-    console.log('   ' + '─'.repeat(50));
+    console.log(`     Total in Okta:        ${style.count(oktaAppUsers.length)}`);
+    console.log(`     Total in CSV:         ${style.count(Object.keys(csvUsers).length)}`);
+    console.log(`   ${colors.cyan}${'─'.repeat(50)}${colors.reset}`);
     console.log('');
 
     // Role Mining in sync mode (if enabled)
     if (config.roleMining?.syncMode === 'every') {
-      console.log('   → Running role mining analysis...');
+      console.log(`   ${style.badge.arrow()} Running role mining analysis...`);
       try {
         const { runRoleMining } = await import('./roleMining.js');
         await runRoleMining(config, appId, resourceId, entitlementsMap, csvFilePath);
       } catch (error) {
-        console.log(`   ⚠ Role mining error: ${error.message}`);
+        console.log(`   ${style.badge.warn()} ${style.warning('Role mining error:')} ${error.message}`);
       }
     }
 
     return { added, updated, removed, failed, entitlementsCreated };
   } catch (error) {
-    console.log(`   ✗ Sync error: ${error.message}`);
+    console.log(`   ${style.badge.fail()} ${style.error('Sync error:')} ${error.message}`);
     console.log('');
     return { added: 0, updated: 0, removed: 0, failed: 1 };
   }
@@ -2287,11 +2447,11 @@ async function runSyncMode(config, app, csvFilePath, resourceId, entitlementsMap
   const intervalMs = intervalMinutes * 60 * 1000;
 
   console.log('');
-  console.log('='.repeat(70));
-  console.log('🔁 SYNC MODE ENABLED');
-  console.log('='.repeat(70));
-  console.log(`   Checking for changes every ${intervalMinutes} minute(s)`);
-  console.log('   Press Ctrl+C to stop');
+  console.log(`${colors.brightMagenta}${'='.repeat(70)}${colors.reset}`);
+  console.log(`${colors.brightMagenta}${colors.bold}🔁 SYNC MODE ENABLED${colors.reset}`);
+  console.log(`${colors.brightMagenta}${'='.repeat(70)}${colors.reset}`);
+  console.log(`   Checking for changes every ${style.count(intervalMinutes)} minute(s)`);
+  console.log(`   ${style.dim('Press Ctrl+C to stop')}`);
   console.log('');
 
   // Run initial sync
@@ -2300,10 +2460,10 @@ async function runSyncMode(config, app, csvFilePath, resourceId, entitlementsMap
   // Schedule periodic syncs
   const syncLoop = async () => {
     const now = new Date().toLocaleTimeString();
-    console.log(`⏰ [${now}] Running scheduled sync...`);
+    console.log(`⏰ ${style.dim('[' + now + ']')} Running scheduled sync...`);
     console.log('');
     await syncUsers(config, app.id, csvFilePath, resourceId, entitlementsMap);
-    console.log(`   Next sync in ${intervalMinutes} minute(s)`);
+    console.log(`   Next sync in ${style.count(intervalMinutes)} minute(s)`);
     console.log('');
   };
 
@@ -2319,14 +2479,14 @@ async function runSyncMode(config, app, csvFilePath, resourceId, entitlementsMap
 
 function printBanner() {
   const banner = `
-     ██████╗ ██╗  ██╗████████╗ █████╗
+${colors.brightCyan}     ██████╗ ██╗  ██╗████████╗ █████╗
     ██╔═══██╗██║ ██╔╝╚══██╔══╝██╔══██╗
     ██║   ██║█████╔╝    ██║   ███████║
     ██║   ██║██╔═██╗    ██║   ██╔══██║
     ╚██████╔╝██║  ██╗   ██║   ██║  ██║
-     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝
+     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝${colors.reset}
 
-    Disconnected App Governance Connector
+    ${colors.bold}Disconnected App Governance Connector${colors.reset}
 `;
   console.log(banner);
 }
@@ -2337,22 +2497,22 @@ async function main() {
     console.log('');
 
     // Get configuration (from file or prompt user)
-    console.log('📋 STEP 1: Loading Configuration');
-    console.log('   → Checking for existing configuration file (config.json)...');
+    console.log(`📋 ${style.step('STEP 1: Loading Configuration')}`);
+    console.log(`   ${style.badge.arrow()} Checking for existing configuration file ${style.dim('(config.json)')}...`);
     let config = await getConfig();
-    console.log('   ✓ Configuration loaded successfully');
-    console.log(`   ✓ Connected to Okta tenant: ${config.oktaDomain}`);
+    console.log(`   ${style.badge.ok()} Configuration loaded successfully`);
+    console.log(`   ${style.badge.ok()} Connected to Okta tenant: ${style.url(config.oktaDomain)}`);
     console.log('');
 
     // Find CSV files in current directory
-    console.log('📂 STEP 2: CSV File Discovery');
-    console.log('   → Scanning current directory for .csv files...');
+    console.log(`📂 ${style.step('STEP 2: CSV File Discovery')}`);
+    console.log(`   ${style.badge.arrow()} Scanning current directory for .csv files...`);
     const csvFiles = findCsvFiles();
 
     if (csvFiles.length === 0) {
-      console.log('   ✗ No CSV files found in the current directory.');
+      console.log(`   ${style.badge.fail()} ${style.error('No CSV files found in the current directory.')}`);
       console.log('');
-      console.log('💡 TIP: Place a CSV file in the current directory and run again.');
+      console.log(`💡 ${style.warning('TIP:')} Place a CSV file in the current directory and run again.`);
       console.log('   The CSV filename will be used as the application name in Okta.');
       process.exit(0);
     }
@@ -2363,121 +2523,121 @@ async function main() {
     if (csvFiles.length === 1) {
       // Only one CSV file, use it automatically
       selectedCsvFile = csvFiles[0];
-      console.log(`   ✓ Found 1 CSV file: ${selectedCsvFile}`);
-      console.log('   → Automatically selected for processing');
+      console.log(`   ${style.badge.ok()} Found ${style.count('1')} CSV file: ${style.name(selectedCsvFile)}`);
+      console.log(`   ${style.badge.arrow()} Automatically selected for processing`);
     } else {
       // Multiple CSV files found
-      console.log(`   ✓ Found ${csvFiles.length} CSV files:`);
-      csvFiles.forEach(file => console.log(`     • ${file}`));
+      console.log(`   ${style.badge.ok()} Found ${style.count(csvFiles.length)} CSV files:`);
+      csvFiles.forEach(file => console.log(`     ${style.badge.bullet()} ${style.name(file)}`));
       console.log('');
 
       // Check if there's a saved selection
       if (config.selectedCsvFile && csvFiles.includes(config.selectedCsvFile)) {
         selectedCsvFile = config.selectedCsvFile;
-        console.log('   → Using previously selected file from configuration');
-        console.log(`   ✓ Selected: ${selectedCsvFile}`);
+        console.log(`   ${style.badge.arrow()} Using previously selected file from configuration`);
+        console.log(`   ${style.badge.ok()} Selected: ${style.name(selectedCsvFile)}`);
         console.log('');
-        console.log('   💡 TIP: To change selection, delete config.json and run again');
+        console.log(`   💡 ${style.dim('TIP: To change selection, delete config.json and run again')}`);
       } else {
-        console.log('   → No saved selection found, prompting for user input...');
+        console.log(`   ${style.badge.arrow()} No saved selection found, prompting for user input...`);
         selectedCsvFile = await selectCsvFile(csvFiles);
 
         // Save selection to config
         config.selectedCsvFile = selectedCsvFile;
         await saveConfig(config);
-        console.log('   ✓ Selection saved to configuration file');
+        console.log(`   ${style.badge.ok()} Selection saved to configuration file`);
       }
     }
     console.log('');
 
     // Process the selected CSV file
     const appName = path.basename(selectedCsvFile, '.csv');
-    console.log('🔧 STEP 3: Application Processing');
-    console.log(`   → CSV File: ${selectedCsvFile}`);
-    console.log(`   → Application Name: "${appName}"`);
+    console.log(`🔧 ${style.step('STEP 3: Application Processing')}`);
+    console.log(`   ${style.badge.arrow()} CSV File: ${style.name(selectedCsvFile)}`);
+    console.log(`   ${style.badge.arrow()} Application Name: ${style.name('"' + appName + '"')}`);
     console.log('');
 
     // Check if app exists
-    console.log('   → Querying Okta API to check if application exists...');
-    console.log(`   → API Call: GET /api/v1/apps?q=${encodeURIComponent(appName)}`);
+    console.log(`   ${style.badge.arrow()} Querying Okta API to check if application exists...`);
+    console.log(`   ${style.badge.arrow()} ${style.dim('API Call:')} ${style.dim('GET /api/v1/apps?q=' + encodeURIComponent(appName))}`);
     const existingApp = await findAppByName(config, appName);
 
     let app;
     if (existingApp) {
-      console.log('   ✓ Application found in Okta!');
+      console.log(`   ${style.badge.ok()} ${style.success('Application found in Okta!')}`);
       console.log('');
-      console.log('   📊 Application Details:');
-      console.log(`     • App ID: ${existingApp.id}`);
-      console.log(`     • Status: ${existingApp.status}`);
-      console.log(`     • Sign-On Mode: ${existingApp.signOnMode}`);
+      console.log(`   📊 ${style.label('Application Details:')}`);
+      console.log(`     ${style.badge.bullet()} App ID: ${style.id(existingApp.id)}`);
+      console.log(`     ${style.badge.bullet()} Status: ${style.value(existingApp.status)}`);
+      console.log(`     ${style.badge.bullet()} Sign-On Mode: ${style.attr(existingApp.signOnMode)}`);
       console.log('');
-      console.log('   → Skipping application creation (already exists)');
+      console.log(`   ${style.badge.arrow()} Skipping application creation ${style.dim('(already exists)')}`);
       app = existingApp;
     } else {
-      console.log('   ℹ Application does not exist in Okta');
-      console.log('   → Preparing SAML 2.0 application definition...');
-      console.log('   → API Call: POST /api/v1/apps');
+      console.log(`   ${style.info('ℹ')} Application does not exist in Okta`);
+      console.log(`   ${style.badge.arrow()} Preparing SAML 2.0 application definition...`);
+      console.log(`   ${style.badge.arrow()} ${style.dim('API Call:')} ${style.dim('POST /api/v1/apps')}`);
       console.log('');
       const newApp = await createSamlApp(config, appName);
-      console.log('   ✓ Application created successfully!');
+      console.log(`   ${style.badge.ok()} ${style.success('Application created successfully!')}`);
       console.log('');
-      console.log('   📊 New Application Details:');
-      console.log(`     • App ID: ${newApp.id}`);
-      console.log(`     • Name: ${newApp.label}`);
-      console.log(`     • Status: ${newApp.status}`);
-      console.log(`     • Sign-On Mode: ${newApp.signOnMode}`);
+      console.log(`   📊 ${style.label('New Application Details:')}`);
+      console.log(`     ${style.badge.bullet()} App ID: ${style.id(newApp.id)}`);
+      console.log(`     ${style.badge.bullet()} Name: ${style.name(newApp.label)}`);
+      console.log(`     ${style.badge.bullet()} Status: ${style.value(newApp.status)}`);
+      console.log(`     ${style.badge.bullet()} Sign-On Mode: ${style.attr(newApp.signOnMode)}`);
       console.log('');
-      console.log('   💡 NOTE: SAML settings use placeholder values.');
-      console.log('   Update SSO URLs and audience in Okta Admin Console.');
+      console.log(`   💡 ${style.warning('NOTE:')} SAML settings use placeholder values.`);
+      console.log(`   ${style.dim('Update SSO URLs and audience in Okta Admin Console.')}`);
       app = newApp;
     }
     console.log('');
 
     // Register app with governance and enable entitlement management
-    console.log('🔐 STEP 4: Entitlement Management Configuration');
+    console.log(`🔐 ${style.step('STEP 4: Entitlement Management Configuration')}`);
     let governanceResourceId = null;
 
     // First check if resource already exists
-    console.log('   → Checking if app is registered in Governance...');
-    console.log(`   → API Call: GET /governance/api/v1/resources?filter=source.id eq "${app.id}"`);
+    console.log(`   ${style.badge.arrow()} Checking if app is registered in Governance...`);
+    console.log(`   ${style.badge.arrow()} ${style.dim('API Call:')} ${style.dim('GET /governance/api/v1/resources?filter=source.id eq "' + app.id + '"')}`);
     governanceResourceId = await getGovernanceResourceId(config, app.id);
 
     if (!governanceResourceId) {
       // Try to opt-in the app to governance / enable entitlement management
-      console.log('   → App not registered in Governance, enabling entitlement management...');
+      console.log(`   ${style.badge.arrow()} App not registered in Governance, enabling entitlement management...`);
       try {
         const resource = await registerGovernanceResource(config, app.id, app.label);
         governanceResourceId = resource.id;
-        console.log(`   ✓ Governance resource ID: ${governanceResourceId}`);
+        console.log(`   ${style.badge.ok()} Governance resource ID: ${style.id(governanceResourceId)}`);
       } catch (error) {
-        console.log(`   ⚠ Could not enable entitlement management: ${error.message}`);
-        console.log('   → This feature requires Okta Identity Governance (OIG) license');
-        console.log('   → Entitlements may need to be enabled manually in Admin Console');
+        console.log(`   ${style.badge.warn()} ${style.warning('Could not enable entitlement management:')} ${error.message}`);
+        console.log(`   ${style.badge.arrow()} ${style.dim('This feature requires Okta Identity Governance (OIG) license')}`);
+        console.log(`   ${style.badge.arrow()} ${style.dim('Entitlements may need to be enabled manually in Admin Console')}`);
         console.log('');
       }
     } else {
-      console.log(`   ✓ App already registered in Governance: ${governanceResourceId}`);
+      console.log(`   ${style.badge.ok()} App already registered in Governance: ${style.id(governanceResourceId)}`);
     }
 
     // Enable entitlement management if we have a resource ID
     if (governanceResourceId) {
-      console.log('   → Enabling entitlement management...');
-      console.log(`   → API Call: PUT /governance/api/v1/resources/${governanceResourceId}/entitlement-management`);
+      console.log(`   ${style.badge.arrow()} Enabling entitlement management...`);
+      console.log(`   ${style.badge.arrow()} ${style.dim('API Call:')} ${style.dim('PUT /governance/api/v1/resources/' + governanceResourceId + '/entitlement-management')}`);
       try {
         await enableEntitlementManagement(config, governanceResourceId);
-        console.log('   ✓ Entitlement management enabled successfully');
-        console.log('   → App is now ready for entitlement creation');
+        console.log(`   ${style.badge.ok()} ${style.success('Entitlement management enabled successfully')}`);
+        console.log(`   ${style.badge.arrow()} App is now ready for entitlement creation`);
       } catch (error) {
-        console.log(`   ⚠ Could not enable entitlement management: ${error.message}`);
-        console.log('   → Entitlement management may already be enabled');
+        console.log(`   ${style.badge.warn()} ${style.warning('Could not enable entitlement management:')} ${error.message}`);
+        console.log(`   ${style.badge.arrow()} ${style.dim('Entitlement management may already be enabled')}`);
       }
     }
     console.log('');
 
     // Process custom attributes from CSV columns
-    console.log('🏷️  STEP 5: Custom Attribute Management');
-    console.log('   → Reading CSV column headers...');
-    console.log('   → Filtering out enterprise columns (starting with "ent_")...');
+    console.log(`🏷️  ${style.step('STEP 5: Custom Attribute Management')}`);
+    console.log(`   ${style.badge.arrow()} Reading CSV column headers...`);
+    console.log(`   ${style.badge.arrow()} Filtering out enterprise columns ${style.dim('(starting with "ent_")')}...`);
     const attributes = await processCustomAttributes(config, app.id, selectedCsvFile);
 
     // Process attribute mappings to Okta user profile
@@ -2498,15 +2658,15 @@ async function main() {
         await runRoleMining(config, app.id, governanceResourceId, entitlementsMap, selectedCsvFile);
       } catch (error) {
         console.log('');
-        console.log('⚠ Role mining encountered an error but continuing:');
-        console.log(`   ${error.message}`);
+        console.log(`${style.badge.warn()} ${style.warning('Role mining encountered an error but continuing:')}`);
+        console.log(`   ${style.dim(error.message)}`);
       }
     }
 
     console.log('');
-    console.log('='.repeat(70));
-    console.log('✅ Initial Processing Complete!');
-    console.log('='.repeat(70));
+    console.log(`${colors.green}${'='.repeat(70)}${colors.reset}`);
+    console.log(`${colors.green}${colors.bold}✅ Initial Processing Complete!${colors.reset}`);
+    console.log(`${colors.green}${'='.repeat(70)}${colors.reset}`);
     console.log('');
 
     // Check if sync mode is enabled
@@ -2515,14 +2675,14 @@ async function main() {
       await runSyncMode(config, app, selectedCsvFile, governanceResourceId, entitlementsMap);
     } else {
       // One-time run - show next steps and exit
-      console.log('📍 Next Steps:');
-      console.log('   1. Login to Okta Admin Console');
-      console.log(`   2. Navigate to Applications → ${appName}`);
-      console.log('   3. Review users assigned to the app under Assignments tab');
-      console.log('   4. Check entitlements under Identity Governance → Resources');
+      console.log(`📍 ${style.label('Next Steps:')}`);
+      console.log(`   ${style.count('1.')} Login to Okta Admin Console`);
+      console.log(`   ${style.count('2.')} Navigate to ${style.dim('Applications →')} ${style.name(appName)}`);
+      console.log(`   ${style.count('3.')} Review users assigned to the app under ${style.attr('Assignments')} tab`);
+      console.log(`   ${style.count('4.')} Check entitlements under ${style.attr('Identity Governance → Resources')}`);
       console.log('');
-      console.log('💡 TIP: To enable automatic sync mode, add "syncInterval": 5 to config.json');
-      console.log('   This will check for CSV changes every 5 minutes.');
+      console.log(`💡 ${style.warning('TIP:')} To enable automatic sync mode, add ${style.value('"syncInterval": 5')} to config.json`);
+      console.log(`   ${style.dim('This will check for CSV changes every 5 minutes.')}`);
       console.log('');
     }
 
@@ -2530,6 +2690,32 @@ async function main() {
     console.log('');
     console.error('❌ ERROR:', error.message);
     console.log('');
+
+    // Check if this is an authentication configuration error - offer to reconfigure
+    if (error.message.includes('Authentication incomplete') ||
+        error.message.includes('OAuth configuration incomplete') ||
+        error.message.includes('missing authentication credentials') ||
+        error.message.includes('No authentication credentials found')) {
+      console.log('💡 This error indicates missing or incomplete authentication in your configuration.');
+      console.log('   API Token (SSWS) is recommended for full Okta API compatibility.');
+      console.log('');
+
+      try {
+        // Reconfigure OAuth credentials
+        const updatedConfig = await reconfigureOAuthCredentials();
+
+        console.log('');
+        console.log('✓ Configuration updated. Restarting...');
+        console.log('');
+
+        // Restart main with updated config
+        return main();
+      } catch (configError) {
+        console.error('Failed to reconfigure:', configError.message);
+        process.exit(1);
+      }
+    }
+
     console.log('💡 Troubleshooting:');
     console.log('   • Check your Okta domain and API token are correct');
     console.log('   • Verify API token has application management permissions');

@@ -124,200 +124,22 @@ export async function getConfigInteractively() {
   }
 
   console.log('');
-  console.log('Authentication Method:');
-  console.log('  1. Device Flow (Recommended) - Authenticate as yourself in browser');
-  console.log('  2. Client Credentials - Use OAuth API Services app (requires admin setup)');
+  console.log('API Token Setup:');
+  console.log('  Create an API token in Okta Admin Console:');
+  console.log('  Security → API → Tokens → Create Token');
   console.log('');
 
-  let authFlow;
-  while (!authFlow) {
-    const flowChoice = await prompt('Select authentication method (1 or 2): ');
-    if (flowChoice === '1' || flowChoice === '2') {
-      authFlow = flowChoice === '1' ? 'device' : 'client_credentials';
-    } else {
-      console.log('Invalid choice. Please enter 1 or 2.');
-    }
-  }
+  const apiToken = await prompt('Okta API Token (SSWS): ');
 
-  console.log('');
-
-  let config;
-
-  if (authFlow === 'device') {
-    console.log('Device Flow Setup:');
-    console.log('  You need a Native or SPA OAuth application (any type except API Services)');
-    console.log('');
-
-    const clientId = await prompt('OAuth Client ID: ');
-
-    config = {
-      oktaDomain: oktaDomain,
-      authFlow: 'device',
-      clientId: clientId.trim()
-    };
-
-    console.log('');
-    console.log('Note: You will authenticate in your browser when the app runs.');
-  } else {
-    console.log('Client Credentials Setup:');
-    console.log('  Requires an "API Services" OAuth application with pre-granted scopes');
-    console.log('');
-
-    const clientId = await prompt('OAuth Client ID: ');
-    const clientSecret = await prompt('OAuth Client Secret: ');
-
-    config = {
-      oktaDomain: oktaDomain,
-      authFlow: 'client_credentials',
-      clientId: clientId.trim(),
-      clientSecret: clientSecret.trim()
-    };
-  }
+  const config = {
+    oktaDomain: oktaDomain,
+    apiToken: apiToken.trim()
+  };
 
   await saveConfig(config);
   console.log(`\nConfiguration saved to ${CONFIG_FILE}\n`);
 
   return config;
-}
-
-/**
- * Get OAuth access token using device authorization flow
- * This allows user to authenticate in browser and consent to scopes
- */
-export async function getAccessTokenDeviceFlow(config) {
-  // For Okta Management APIs with device flow, we use standard OpenID scopes
-  // The user's Okta admin permissions determine what API operations they can perform
-  // Custom Okta Management scopes (okta.apps.manage, etc.) are not allowed in device flow
-  const scopes = ['openid', 'profile', 'email', 'okta.users.read'];
-
-  const deviceAuthUrl = `https://${config.oktaDomain}/oauth2/v1/device/authorize`;
-  const tokenUrl = `https://${config.oktaDomain}/oauth2/v1/token`;
-
-  try {
-    // Step 1: Request device code
-    console.log('   → Requesting device authorization code...');
-    console.log(`   → Device auth URL: ${deviceAuthUrl}`);
-    console.log(`   → Client ID: ${config.clientId}`);
-    console.log(`   → Authentication: Device flow uses your Okta admin permissions`);
-
-    const deviceResponse = await fetch(deviceAuthUrl, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: new URLSearchParams({
-        client_id: config.clientId,
-        scope: scopes.join(' ')
-      })
-    });
-
-    if (!deviceResponse.ok) {
-      const errorBody = await deviceResponse.text();
-      let errorData;
-
-      try {
-        errorData = JSON.parse(errorBody);
-      } catch (e) {
-        errorData = { error_description: errorBody };
-      }
-
-      // Provide helpful error messages
-      if (errorData.error === 'invalid_client') {
-        throw new Error(
-          `❌ OAuth Client Not Found or Device Flow Not Enabled!\n\n` +
-          `Client ID: ${config.clientId}\n\n` +
-          `The OAuth application must support Device Authorization Flow.\n\n` +
-          `To fix this:\n` +
-          `  1. Login to Okta Admin Console (https://${config.oktaDomain})\n` +
-          `  2. Navigate to Applications → Applications\n` +
-          `  3. Find or create an OAuth application:\n` +
-          `     - Application type: Native or Single-Page App (SPA)\n` +
-          `     - Grant type: Device Authorization (must be enabled)\n` +
-          `  4. In the application settings:\n` +
-          `     - Go to General Settings\n` +
-          `     - Scroll to "Grant type"\n` +
-          `     - Check "Device Authorization"\n` +
-          `     - Click Save\n` +
-          `  5. Copy the Client ID\n` +
-          `  6. Update your config.json with the new Client ID\n\n` +
-          `Original error: ${errorData.error_description}`
-        );
-      }
-
-      throw new Error(`Device authorization request failed: ${deviceResponse.status} - ${errorBody}`);
-    }
-
-    const deviceData = await deviceResponse.json();
-
-    // Step 2: Display instructions to user
-    console.log('');
-    console.log('   ╔════════════════════════════════════════════════════════════════╗');
-    console.log('   ║                   USER AUTHENTICATION REQUIRED                 ║');
-    console.log('   ╚════════════════════════════════════════════════════════════════╝');
-    console.log('');
-    console.log(`   🌐 Please visit: ${deviceData.verification_uri}`);
-    console.log('');
-    console.log(`   🔑 Enter code: ${deviceData.user_code}`);
-    console.log('');
-    console.log('   ⏱  Waiting for you to complete authentication...');
-    console.log('      (This code expires in ' + Math.floor(deviceData.expires_in / 60) + ' minutes)');
-    console.log('');
-
-    // Step 3: Poll for token
-    const interval = deviceData.interval || 5; // Default 5 seconds between polls
-    const expiresAt = Date.now() + (deviceData.expires_in * 1000);
-
-    while (Date.now() < expiresAt) {
-      await new Promise(resolve => setTimeout(resolve, interval * 1000));
-
-      const tokenResponse = await fetch(tokenUrl, {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams({
-          client_id: config.clientId,
-          device_code: deviceData.device_code,
-          grant_type: 'urn:ietf:params:oauth:grant-type:device_code'
-        })
-      });
-
-      if (tokenResponse.ok) {
-        const tokenData = await tokenResponse.json();
-        console.log('   ✓ Authentication successful!');
-        console.log('   ✓ OAuth token acquired');
-        if (tokenData.scope) {
-          console.log(`   → Granted scopes: ${tokenData.scope}`);
-        }
-        console.log('');
-        return tokenData.access_token;
-      }
-
-      const errorData = await tokenResponse.json();
-
-      if (errorData.error === 'authorization_pending') {
-        // Still waiting for user to authorize
-        process.stdout.write('   ⏳ Still waiting...\r');
-        continue;
-      }
-
-      if (errorData.error === 'slow_down') {
-        // Server wants us to slow down
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        continue;
-      }
-
-      // Any other error is terminal
-      throw new Error(`Device authorization failed: ${errorData.error} - ${errorData.error_description}`);
-    }
-
-    throw new Error('Device authorization timed out - user did not complete authentication in time');
-
-  } catch (error) {
-    throw new Error(`Device flow authentication failed: ${error.message}`);
-  }
 }
 
 /**
@@ -486,6 +308,55 @@ export async function getAccessToken(config) {
 }
 
 /**
+ * Reconfigure credentials when they are missing or invalid
+ * Prompts for API token (recommended for full API compatibility)
+ */
+export async function reconfigureOAuthCredentials() {
+  console.log('\n' + '='.repeat(70));
+  console.log('⚠️  Authentication Configuration Required');
+  console.log('='.repeat(70));
+
+  const existingConfig = await loadConfig();
+
+  if (!existingConfig) {
+    // No config at all, do full interactive setup
+    return await getConfigInteractively();
+  }
+
+  console.log(`\n   Current configuration:`);
+  console.log(`   • Okta Domain: ${existingConfig.oktaDomain || '(not set)'}`);
+  console.log(`   • API Token: ${existingConfig.apiToken ? '(set)' : '(not set)'}`);
+
+  if (existingConfig.clientId) {
+    console.log(`   • Client ID: ${existingConfig.clientId} (OAuth - not recommended)`);
+  }
+
+  console.log('\n   ℹ️  API Token is recommended for full Okta API compatibility.');
+  console.log('   The Governance APIs work best with SSWS API tokens.\n');
+
+  console.log('   To create an API token:');
+  console.log('   1. Login to Okta Admin Console');
+  console.log('   2. Navigate to: Security → API → Tokens');
+  console.log('   3. Click "Create Token" and give it a name');
+  console.log('   4. Copy the token value (shown only once)\n');
+
+  const apiToken = await prompt('Okta API Token (SSWS): ');
+
+  // Set API token and remove OAuth settings
+  existingConfig.apiToken = apiToken.trim();
+  delete existingConfig.clientId;
+  delete existingConfig.clientSecret;
+  delete existingConfig.privateKey;
+  delete existingConfig.privateKeyPath;
+
+  await saveConfig(existingConfig);
+  console.log('\n   ✓ API Token saved to config.json');
+  console.log('   ✓ OAuth settings removed (using API Token only)\n');
+
+  return existingConfig;
+}
+
+/**
  * Get configuration from file or prompt user
  */
 export async function getConfig() {
@@ -503,29 +374,6 @@ export async function getConfig() {
       config = await getConfigInteractively();
     }
 
-    // Check if we need to migrate from SSWS token to OAuth
-    if (config.apiToken && !config.clientId) {
-      console.log('\n⚠️  Warning: Configuration uses legacy SSWS token authentication');
-      console.log('   For better security and governance access, consider migrating to OAuth 2.0');
-      console.log('   Current limitations with SSWS:');
-      console.log('     • May not have access to all governance APIs');
-      console.log('     • Less granular permission control');
-      console.log('');
-      const migrate = await prompt('Would you like to migrate to OAuth now? (y/n): ');
-
-      if (migrate.toLowerCase() === 'y' || migrate.toLowerCase() === 'yes') {
-        console.log('');
-        const clientId = await prompt('OAuth Client ID: ');
-        const clientSecret = await prompt('OAuth Client Secret: ');
-
-        config.clientId = clientId.trim();
-        config.clientSecret = clientSecret.trim();
-        // Keep apiToken as fallback
-
-        await saveConfig(config);
-        console.log('\n✓ Configuration updated with OAuth credentials\n');
-      }
-    }
   }
 
   // Set role mining defaults if not specified

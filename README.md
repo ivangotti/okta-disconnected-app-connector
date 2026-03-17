@@ -14,7 +14,7 @@ A modern governance connector that brings any application under **Okta Identity 
 - **Creates bundles** automatically for discovered roles
 - **Monitors CSV for changes** continuously in sync mode
 
-> ⚠️ **Experimental Project**: This connector is provided as-is for demonstration and testing purposes. Use at your own risk. Always test in a non-production environment first.
+> **Experimental Project**: This connector is provided as-is for demonstration and testing purposes. Use at your own risk. Always test in a non-production environment first.
 
 ## Why Disconnected Apps?
 
@@ -26,6 +26,90 @@ Disconnected applications in Okta Identity Governance allow you to:
 - **Audit & Compliance**: Track who has access to what, with full history
 
 **Note**: The application does NOT need to have authentication (SAML/OIDC) configured. The app serves as a governance container for managing entitlements and access - actual authentication to the target system is handled separately.
+
+## Prerequisites
+
+- Node.js 18.x or higher
+- An Okta account with API access
+- Okta Identity Governance (OIG) license for entitlement features
+
+## Quick Start
+
+### 1. Create an API Token (1 minute)
+
+1. **Okta Admin Console** → **Security** → **API** → **Tokens**
+2. Click **Create Token** → Name it "CSV Connector" → **Create**
+3. **Copy the token immediately** (shown only once)
+
+### 2. Create Configuration File
+
+Create `config.json` in the project directory:
+
+```json
+{
+  "oktaDomain": "your-company.okta.com",
+  "apiToken": "00abc123XYZ_your-ssws-token-here"
+}
+```
+
+### 3. Run the Connector
+
+```bash
+# Install dependencies
+npm install
+
+# Run the application
+npm start
+```
+
+**That's it!** The connector will automatically process your CSV files.
+
+---
+
+## Configuration Reference
+
+### Required Fields
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `oktaDomain` | Your Okta tenant domain | `"company.okta.com"` |
+| `apiToken` | SSWS API Token | `"00abc123XYZ..."` |
+
+### Optional Fields
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `selectedCsvFile` | Pre-select CSV file (skip prompt) | `"MyApp.csv"` |
+| `syncInterval` | Enable sync mode (minutes) | `5` |
+| `roleMining` | Role mining configuration | See below |
+
+### Full Configuration Example
+
+```json
+{
+  "oktaDomain": "your-company.okta.com",
+  "apiToken": "00abc123XYZ_your-ssws-token-here",
+  "selectedCsvFile": "My Application.csv",
+  "syncInterval": 5,
+  "roleMining": {
+    "enabled": true,
+    "minUserThreshold": 2,
+    "createBundles": true,
+    "syncMode": "initial"
+  }
+}
+```
+
+### Role Mining Configuration
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Enable/disable role mining |
+| `minUserThreshold` | `2` | Minimum users required per role |
+| `createBundles` | `true` | Create bundles in Okta (`false` = report only) |
+| `syncMode` | `"initial"` | When to run: `"initial"`, `"every"`, or `"manual"` |
+
+---
 
 ## Connector Features
 
@@ -40,158 +124,14 @@ Disconnected applications in Okta Identity Governance allow you to:
 - **Continuous Monitoring**: Runs as an agent, periodically checking for CSV changes
 - **Smart Change Detection**: Detects new users, removed users, and attribute/entitlement changes
 - **Dynamic Entitlement Values**: Automatically creates new entitlement values when they appear in CSV
-- **Verbose Sync Results**: Detailed reporting after each sync cycle
+- **Colorized Output**: Beautiful terminal output with syntax-highlighted JSON and color-coded status
 
 ### Reliability & Performance
-- **Token Auto-Refresh**: OAuth tokens automatically refresh before expiration
 - **Rate Limit Handling**: Built-in retry logic with backoff for Okta API limits
 - **Error Recovery**: Automatic retry on transient failures (401, 429 errors)
-
-## Prerequisites
-
-- Node.js 18.x or higher
-- An Okta account with API access
-- Okta Identity Governance (OIG) license for entitlement features
-
-## Quick Start
-
-```bash
-# Install dependencies
-npm install
-
-# Run the application
-npm start
-
-# Development mode with auto-reload
-npm run dev
-```
-
-## Configuration
-
-### 3-Minute Setup
-
-This connector requires two types of credentials from Okta. Follow these steps:
-
-#### Step 1: Create OAuth Application (2 minutes)
-
-1. **Okta Admin Console** → **Applications** → **Create App Integration**
-2. Select **API Services** → Name it "CSV Connector" → **Save**
-3. Copy the **Client ID** and **Client Secret**
-4. Go to **Okta API Scopes** tab → Grant all scopes below → **Save**
-
-**Required Scopes:**
-```
-okta.apps.manage, okta.apps.read
-okta.users.manage, okta.users.read
-okta.schemas.manage, okta.schemas.read
-okta.profileMappings.manage, okta.profileMappings.read
-okta.governance.accessCertifications.manage
-okta.governance.accessRequests.manage
-```
-
-#### Step 2: Generate SSWS API Token (1 minute)
-
-1. **Okta Admin Console** → **Security** → **API** → **Tokens**
-2. **Create Token** → Name it "CSV Connector" → **Create**
-3. **Copy the token immediately** (shown only once)
-
-#### Step 3: Create Configuration File
-
-Create `config.json` in the project directory:
-
-```json
-{
-  "oktaDomain": "your-company.okta.com",
-  "clientId": "0oa1234567890abcdef",
-  "clientSecret": "your-client-secret-here",
-  "apiToken": "00abc123XYZ_your-ssws-token-here"
-}
-```
-
-**Done!** Run `npm start` and the connector will automatically process your CSV files.
+- **Interactive Reconfiguration**: Prompts to fix configuration issues without restarting
 
 ---
-
-### Why Both OAuth AND SSWS?
-
-Different Okta API families require different authentication:
-
-| API Type | OAuth | SSWS |
-|----------|-------|------|
-| Core APIs (apps, users, schemas) | ✅ | ✅ |
-| Governance APIs (entitlements, grants, bundles) | ❌ | ✅ |
-
-**The connector automatically uses the correct authentication method for each API.**
-
----
-
-### Advanced: Private Key JWT (Optional)
-
-For enhanced security, you can use private key authentication instead of client secret:
-
-**Step 1:** Generate an RSA key pair (if you don't have one):
-```bash
-node generate-keys.js
-```
-This creates `private-key.pem` and `public-key.pem`.
-
-**Step 2:** Upload public key to your OAuth app in Okta Admin Console:
-- Applications → Your App → General Settings → Client Credentials
-- Click "Edit" → Add "Public Key" → Paste contents of `public-key.pem`
-
-**Step 3:** Update `config.json`:
-```json
-{
-  "oktaDomain": "your-company.okta.com",
-  "clientId": "0oa1234567890abcdef",
-  "privateKeyPath": "./private-key.pem",
-  "apiToken": "00abc123XYZ_your-ssws-token-here"
-}
-```
-
-> **Note**: JWKS/JWK format is NOT required. The app uses standard PEM format keys.
-
----
-
-### Configuration Reference
-
-#### Required Fields
-
-| Field | Description | Example |
-|-------|-------------|---------|
-| `oktaDomain` | Your Okta tenant domain | `"company.okta.com"` |
-| `clientId` | OAuth Client ID | `"0oa1234567890abcdef"` |
-| `clientSecret` | OAuth Client Secret (or use `privateKeyPath`) | `"abc123..."` |
-| `apiToken` | SSWS API Token | `"00abc123XYZ..."` |
-
-#### Optional Fields
-
-| Field | Description | Example |
-|-------|-------------|---------|
-| `privateKeyPath` | Path to PEM private key (instead of clientSecret) | `"./private-key.pem"` |
-| `selectedCsvFile` | Pre-select CSV file (skip prompt) | `"MyApp.csv"` |
-| `syncInterval` | Enable sync mode (minutes) | `5` |
-| `roleMining` | Role mining configuration | See below |
-
-#### Role Mining Configuration
-
-```json
-{
-  "roleMining": {
-    "enabled": true,
-    "minUserThreshold": 2,
-    "createBundles": true,
-    "syncMode": "initial"
-  }
-}
-```
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `enabled` | `true` | Enable/disable role mining |
-| `minUserThreshold` | `2` | Minimum users required per role |
-| `createBundles` | `true` | Create bundles in Okta (`false` = report only) |
-| `syncMode` | `"initial"` | When to run: `"initial"`, `"every"`, or `"manual"` |
 
 ## CSV File Structure
 
@@ -235,6 +175,8 @@ CSV columns are automatically mapped to Okta fields:
 | `manager`, `managerId` | `manager` |
 | ... and 50+ more variations | |
 
+---
+
 ## Processing Flow
 
 The application executes a 9-step automated workflow:
@@ -254,7 +196,7 @@ The application executes a 9-step automated workflow:
 │  → Registers app with Okta Governance, enables entitlement mgmt     │
 ├─────────────────────────────────────────────────────────────────────┤
 │  STEP 5: Custom Attribute Management                                │
-│  → Creates app user schema attributes from all CSV columns          │
+│  → Creates app user schema attributes from CSV columns              │
 ├─────────────────────────────────────────────────────────────────────┤
 │  STEP 6: Profile Attribute Mapping                                  │
 │  → Maps CSV columns to Okta user profile fields automatically       │
@@ -269,6 +211,8 @@ The application executes a 9-step automated workflow:
 │  → Discovers role patterns, creates entitlement bundles             │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+---
 
 ## Entitlement Management
 
@@ -303,37 +247,7 @@ The app creates:
 
 And grants all of these to the user.
 
-### Entitlement Grant API Format
-
-Grants are created using the Okta Governance API:
-
-```json
-{
-  "grantType": "CUSTOM",
-  "targetPrincipal": {
-    "externalId": "<user-id>",
-    "type": "OKTA_USER"
-  },
-  "actor": "ADMIN",
-  "target": {
-    "externalId": "<app-id>",
-    "type": "APPLICATION"
-  },
-  "entitlements": [
-    {
-      "id": "<entitlement-id>",
-      "values": [
-        {
-          "id": "<value-id>",
-          "name": "Admin",
-          "description": "Admin",
-          "label": "Admin"
-        }
-      ]
-    }
-  ]
-}
-```
+---
 
 ## Role Mining & Bundle Creation
 
@@ -344,7 +258,7 @@ The connector includes **automated role discovery** that analyzes CSV entitlemen
 After provisioning users (Step 8), the connector automatically:
 
 1. **Analyzes CSV Data**: Reads all user entitlement assignments from the CSV
-2. **Discovers Patterns**: Groups users with identical permission combinations (exact match clustering)
+2. **Discovers Patterns**: Groups users with identical permission combinations
 3. **Generates Role Candidates**: Creates role definitions for groups meeting the minimum threshold
 4. **Creates Bundles**: Automatically creates Okta Governance bundles via API
 5. **Reports Statistics**: Shows coverage metrics and bundle details
@@ -381,55 +295,11 @@ After provisioning users (Step 8), the connector automatically:
    Users Covered: 80 (80.0%)
 ```
 
-### Configuration
-
-Add `roleMining` section to your `config.json`:
-
-```json
-{
-  "oktaDomain": "your-company.okta.com",
-  "clientId": "0oa1234567890abcdef",
-  "clientSecret": "your-client-secret-here",
-  "apiToken": "00abc123XYZ_your-ssws-token-here",
-  "roleMining": {
-    "enabled": true,
-    "minUserThreshold": 2,
-    "createBundles": true,
-    "syncMode": "initial"
-  }
-}
-```
-
-### Configuration Options
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `enabled` | `true` | Enable/disable role mining feature |
-| `minUserThreshold` | `2` | Minimum users required to create a bundle |
-| `createBundles` | `true` | If `false`, only reports roles without creating bundles |
-| `syncMode` | `"initial"` | When to run: `"initial"` (first run only), `"every"` (all syncs), `"manual"` (disabled) |
-
-### Use Cases
-
-**High Coverage Scenarios** (70%+ users in roles):
-- Organizations with standardized job functions
-- Departments with common permission patterns
-- Applications with role-based access models
-
-**Low Coverage Scenarios** (individualized access):
-- Applications with user-specific permissions
-- Highly customized access patterns
-- Consider setting `minUserThreshold: 1` or disabling
-
-### Viewing Created Bundles
-
-1. **Okta Admin Console**: Identity Governance → Bundles
-2. **API**: `GET /governance/api/v1/entitlement-bundles`
-3. **Verification Script**: Run `node verify-bundles.js`
+---
 
 ## Scheduled Sync Mode
 
-The application supports **continuous sync mode** that keeps monitoring the CSV file for user or entitlement changes and automatically keeps everything in sync with Okta. The agent runs indefinitely, checking for changes at configurable intervals.
+The application supports **continuous sync mode** that keeps monitoring the CSV file for changes and automatically syncs with Okta.
 
 ### Enable Sync Mode
 
@@ -437,20 +307,13 @@ Add `syncInterval` to your `config.json`:
 
 ```json
 {
+  "oktaDomain": "your-company.okta.com",
+  "apiToken": "00abc123XYZ_your-ssws-token-here",
   "syncInterval": 5
 }
 ```
 
 This will check for CSV changes every 5 minutes.
-
-### Key Features
-
-- **Continuous Monitoring**: Agent keeps running and checking for changes automatically
-- **Dynamic Entitlement Creation**: New entitlement values in CSV are automatically created in Okta
-- **User Lifecycle Management**: Handles adds, updates, and removals seamlessly
-- **Token Auto-Refresh**: OAuth tokens are automatically refreshed before expiration
-- **Rate Limit Handling**: Built-in retry logic for Okta API rate limits
-- **Verbose Results**: Detailed sync results after each cycle
 
 ### What Sync Mode Detects & Handles
 
@@ -460,83 +323,7 @@ This will check for CSV changes every 5 minutes.
 | **User removed from CSV** | Revoke entitlements, unassign from app |
 | **User attributes changed** | Update app user profile |
 | **User entitlements changed** | Revoke old grants, create new grants |
-| **New entitlement value in CSV** | Automatically create the new value in Okta, then assign to user |
-
-### Dynamic Entitlement Value Creation
-
-When a new entitlement value appears in the CSV that doesn't exist in Okta, the sync automatically:
-
-1. Detects the new value (e.g., a new role "Super Admin" added to a user)
-2. Creates the value in the existing entitlement in Okta
-3. Grants the new entitlement value to the user
-
-```
-🔄 SYNC: Checking for changes...
-
-   → Checking for new entitlement values...
-   → New entitlement value detected: "Super Admin" for Permissions
-     ✓ Created: Super Admin (ent3abc123xyz)
-   ✓ Created 1 new entitlement value(s):
-     • permissions: "Super Admin"
-```
-
-### Sync Results Output
-
-After each sync cycle, detailed results are displayed:
-
-```
-──────────────────────────────────────────────────
-📊 SYNC RESULTS [3:45:32 PM]
-──────────────────────────────────────────────────
-  Entitlements Created: 1
-  Users Added:          2
-  Users Updated:        5
-  Users Removed:        1
-  Total in Okta:        102
-  Total in CSV:         103
-──────────────────────────────────────────────────
-```
-
-### Full Sync Cycle Example
-
-```
-⏰ [3:45:32 PM] Running scheduled sync...
-
-🔄 SYNC: Checking for changes...
-
-   → Checking for new entitlement values...
-   ✓ All entitlement values already exist
-   → Fetching current users from Okta...
-   ✓ Found 100 user(s) currently assigned to app
-   ✓ CSV contains 102 user(s)
-
-   📊 Changes detected:
-     • New users to add: 2
-     • Users to update: 100
-     • Users to remove: 0
-
-   ➕ Adding new users from CSV...
-     → Adding newuser@example.com...
-     ✓ newuser@example.com added with entitlements
-
-   🔄 Checking for updates...
-     → Updating john.doe@example.com (changed: ent_Permissions)...
-     ✓ john.doe@example.com updated
-     ✓ Updated 1 user(s), 1 entitlement grant(s)
-
-   ──────────────────────────────────────────────────
-   📊 SYNC RESULTS [3:45:45 PM]
-   ──────────────────────────────────────────────────
-     Entitlements Created: 0
-     Users Added:          2
-     Users Updated:        1
-     Users Removed:        0
-     Total in Okta:        102
-     Total in CSV:         102
-   ──────────────────────────────────────────────────
-
-   Next sync in 5 minute(s)
-```
+| **New entitlement value in CSV** | Automatically create the new value in Okta |
 
 ### Running as a Service
 
@@ -548,76 +335,36 @@ nohup npm start > sync.log 2>&1 &
 
 # Or using pm2
 pm2 start index.js --name "okta-sync"
-
-# View logs
 pm2 logs okta-sync
-
-# Stop the service
 pm2 stop okta-sync
 ```
 
-### Token Auto-Refresh
+---
 
-The sync mode automatically handles OAuth token expiration:
+## Troubleshooting
 
-- Tokens are refreshed 5 minutes before expiration
-- If a 401 error occurs, the token is automatically refreshed and the request retried
-- No manual intervention needed for long-running sync processes
+### "No username/email column found"
 
-## Example Output
+The app couldn't find a username column. Ensure your CSV has one of:
+`Username`, `login`, `email`, `user`, `userid`, `user_id`, `mail`
 
-```
-======================================================================
-  Okta Disconnected App Governance Connector
-======================================================================
+### "Authentication incomplete" Error
 
-📋 STEP 1: Loading Configuration
-   ✓ Configuration loaded successfully
-   ✓ Connected to Okta tenant: your-tenant.okta.com
+The app will automatically prompt you to enter an API token if credentials are missing or invalid. Follow the on-screen instructions.
 
-📂 STEP 2: CSV File Discovery
-   ✓ Found 1 CSV file: My Application.csv
+### Rate Limiting (HTTP 429)
 
-🔧 STEP 3: Application Processing
-   ✓ Application created successfully!
-     • App ID: 0oa1b2c3d4e5f6g7h8i9
-     • Status: ACTIVE
+The app includes automatic rate limit handling:
+- Pauses every 10 users
+- Retries on 429 errors with 5-second delay
 
-🔐 STEP 4: Entitlement Management Configuration
-   ✓ Entitlement management enabled successfully
-   ✓ Governance resource ID: res1a2b3c4d5e6f7g8h9
+### Governance API 405 Errors
 
-🏷️  STEP 5: Custom Attribute Management
-   ✓ Created 10 custom attributes
+Some governance endpoints return 405 (Method Not Allowed). This is normal:
+- The opt-in endpoint works
+- Entitlement creation still works via the main endpoint
 
-🔗 STEP 6: Profile Attribute Mapping
-   ✓ Mapped 6 attributes to Okta user profile
-
-📦 STEP 7: Entitlement Catalog & Creation
-   ✓ Created 3 entitlements with 20 total values
-
-👥 STEP 8: User Provisioning
-   📊 User Provisioning Summary:
-     • Total users in CSV: 100
-     • Created: 0
-     • Updated: 100
-     • Assigned to app: 100
-     • Governance grants created: 100
-
-======================================================================
-✅ Processing Complete!
-======================================================================
-```
-
-## Project Structure
-
-```
-├── index.js           # Main application (1600+ lines)
-├── config.js          # Configuration management
-├── config.json        # Credentials storage (gitignored)
-├── package.json       # Dependencies
-└── README.md          # This file
-```
+---
 
 ## API Endpoints Used
 
@@ -633,38 +380,13 @@ The sync mode automatically handles OAuth token expiration:
 | `POST /governance/api/v1/entitlements` | Create entitlements |
 | `POST /governance/api/v1/grants` | Grant entitlements to users |
 
-## Troubleshooting
-
-### "No username/email column found"
-
-The app couldn't find a username column. Ensure your CSV has one of:
-`Username`, `login`, `email`, `user`, `userid`, `user_id`, `mail`
-
-### "Invalid entitlement id(s): []"
-
-This occurs when CSV values don't match created entitlement values. The app now handles:
-- Duplicate values (e.g., "Admin,Admin" → deduplicated)
-- Case-insensitive matching
-
-### Rate Limiting (HTTP 429)
-
-The app includes automatic rate limit handling:
-- Pauses every 10 users
-- Retries on 429 errors with 5-second delay
-
-### Governance API 405 Errors
-
-Some governance endpoints return 405 (Method Not Allowed). This is normal:
-- The opt-in endpoint works
-- Some enable/disable endpoints may not be available
-- Entitlement creation still works via the main endpoint
+---
 
 ## Security Notes
 
 - `config.json` is gitignored - never commit credentials
 - Passwords for new users are randomly generated (16 chars, mixed case + numbers + symbols)
 - API tokens should be rotated regularly
-- Use OAuth with scoped permissions when possible
 
 ## License
 
